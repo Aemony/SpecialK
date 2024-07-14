@@ -52,6 +52,8 @@ jobs:
               $process = Start-Process -FilePath cmd.exe -ArgumentList $Arguments -Wait -PassThru -WindowStyle Hidden
 
     - uses: microsoft/setup-msbuild@v2
+      with:
+        vs-version: '[17.6)'
 
     #- name: Restore the required Nuget packages
     #  run: |
