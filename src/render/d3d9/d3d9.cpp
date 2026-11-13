@@ -971,6 +971,11 @@ SK_D3DXCreateTextureFromFileInMemoryEx (
     }
   }
 
+  // Replacements are created in the same pool as the texture they replace,
+  //   but without its usage; this pool is always paired with dynamic usage.
+  if (Pool == D3DPOOL_MANAGED_EX)
+     Usage |= D3DUSAGE_DYNAMIC;
+
   HRESULT hr = E_FAIL;
 
   SK::D3D9::TextureManager& tex_mgr =
@@ -3627,15 +3632,8 @@ D3D9UpdateTexture_Override ( IDirect3DDevice9      *This,
   SK::D3D9::TextureManager& tex_mgr =
     SK_D3D9_GetTextureManager ();
 
-  if ((! config.textures.d3d9_mod) && (! tex_mgr.init))
-  {
-    return
-      D3D9Device_UpdateTexture_Original ( This,
-                                            pSourceTexture,
-                                              pDestinationTexture );
-  }
-
-
+  // Wrapped textures always have to be unwrapped, even if the texture
+  //   manager has since been shut down; only the bookkeeping is optional.
   IDirect3DBaseTexture9* pRealSource = pSourceTexture;
   IDirect3DBaseTexture9* pRealDest   = pDestinationTexture;
 
@@ -3690,7 +3688,7 @@ D3D9UpdateTexture_Override ( IDirect3DDevice9      *This,
   bool bCallerIsSteam = false;
     //StrStrIW (SK_GetModuleName (SK_GetCallingDLL ()).c_str (), L"GameOverlayRenderer") != nullptr;
 
-  if (SUCCEEDED (hr) && src_is_wrapped && dst_is_wrapped && (! bCallerIsSteam) && (! tex_mgr.injector.isInjectionThread ()))
+  if (SUCCEEDED (hr) && tex_mgr.init && src_is_wrapped && dst_is_wrapped && (! bCallerIsSteam) && (! tex_mgr.injector.isInjectionThread ()))
   {
     auto* pSrc =
       static_cast <ISKTextureD3D9 *> (pSourceTexture);

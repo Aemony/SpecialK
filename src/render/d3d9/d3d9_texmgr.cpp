@@ -558,7 +558,11 @@ D3D9CreateTexture_Detour (IDirect3DDevice9    *This,
   SK::D3D9::TextureManager& tex_mgr =
     SK_D3D9_GetTextureManager ();
 
-  if (config.textures.d3d9_mod || tex_mgr.init)
+  // Changing the usage of the game's textures is invasive (D3D9Ex games keep
+  //   everything in the default pool, so this would apply to all of their
+  //     compressed textures); only do it if the user wants to dump textures.
+  if ( tex_mgr.init && ( config.textures.dump_on_load ||
+                         config.textures.on_demand_dump ) )
   {
     if ( (Usage & D3DUSAGE_RENDERTARGET) !=
                   D3DUSAGE_RENDERTARGET )
@@ -621,7 +625,9 @@ D3D9CreateTexture_Detour (IDirect3DDevice9    *This,
       tex_mgr.trackRenderTarget (*ppTexture);
     }
 
-    else
+    // These hooks are also installed to make forcing D3D9Ex work, in which
+    //   case the texture manager is not running and has no use for a wrapper.
+    else if (tex_mgr.init)
     {
       ISKTextureD3D9* dontcare;
       if (FAILED ((*ppTexture)->QueryInterface (IID_SKTextureD3D9, (void **)&dontcare)))
@@ -1884,7 +1890,10 @@ D3DXCreateTextureFromFileInMemoryEx_Detour (
 
   // Injection would recurse slightly and cause impossible to diagnose reference counting problems
   //   with texture caching if we did not check for this!
-  if (tex_mgr.injector.isInjectionThread ())
+  //
+  //  The same goes for when this hook only exists to make forcing D3D9Ex work
+  //    (see above) and the texture manager is not running.
+  if (tex_mgr.injector.isInjectionThread () || (! tex_mgr.init))
   {
     return
       SK_D3DXCreateTextureFromFileInMemoryEx (
@@ -1937,9 +1946,10 @@ D3DXCreateTextureFromFileInMemoryEx_Detour (
   bool resample = false;
 
   // Necessary to make D3DX texture write functions work
-  if ( Pool == D3DPOOL_DEFAULT && ( config.textures.dump_on_load &&
+  if ( Pool == D3DPOOL_DEFAULT && ( config.textures.on_demand_dump || (
+                                    config.textures.dump_on_load &&
         (! tex_mgr.isTextureDumped     (checksum))         &&
-        (! tex_mgr.isTextureInjectable (checksum)) ) )//|| (
+        (! tex_mgr.isTextureInjectable (checksum)) ) ) )//|| (
                                     //config.textures.d3d11.cache /*||
                                     //config.textures.on_demand_dump*/ ) )
     Usage |= D3DUSAGE_DYNAMIC;
