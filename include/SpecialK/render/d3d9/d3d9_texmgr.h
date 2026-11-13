@@ -140,6 +140,8 @@ struct TexThreadStats {
     unsigned int           archive = std::numeric_limits <unsigned int>::max ();
              int           fileno  = 0UL;
     enum     TexLoadMethod method  = DontCare;
+             uint32_t      file_checksum = 0x00; // Checksum the file is named after, if this
+                                                 //   record is an alias for another checksum
     volatile LONG          removed = FALSE; // Rather than removing entries and
                                            //   shuffling lists in memory, alter this
   };
@@ -279,6 +281,17 @@ struct TexThreadStats {
     size_t                     getInjectableTextures   (TexList&        texure_list) const;
     TexRecord&                 getInjectableTexture    (uint32_t        checksum);
 
+    // Full path of a replacement stored as a loose file (empty for archives);
+    //   wszPath must have room for MAX_PATH + 2 characters.
+    void                       getInjectablePath       (      uint32_t   checksum,
+                                                        const TexRecord& record,
+                                                              wchar_t*   wszPath);
+
+    // Lets a texture identified by one checksum (i.e. of the file it was loaded
+    //   from) use the replacement that exists for its pixel checksum.
+    bool                       aliasInjectable         (uint32_t        checksum,
+                                                        uint32_t        pixel_checksum);
+
     bool                       isTextureBlacklisted    (uint32_t        checksum)    const;
 
 
@@ -398,6 +411,7 @@ public:
     CRITICAL_SECTION                                         cs_unreferenced = { };
 
     concurrent_unordered_map <uint32_t, TexRecord>           injectable_textures;
+    concurrent_unordered_map <uint32_t, uint32_t>            injectable_aliases; // checksum -> pixel checksum
     std::vector              <std::wstring>                  archives;
     concurrent_unordered_map <int32_t, bool>                 dumped_textures;
 
@@ -1288,6 +1302,8 @@ public:
   IDirect3DTexture9* pTex;          // The original texture data
   SSIZE_T            tex_size;      //   Original data size
   uint32_t           tex_crc32c;    //   Original data checksum
+  uint32_t           pixel_crc32c = 0x00; // Checksum of LOD 0's pixels, if known; this is the
+                                          //   same as tex_crc32c unless D3DX9 loaded the texture
 
   IDirect3DTexture9* pTexOverride;  // The overridden texture data (nullptr if unchanged)
   SSIZE_T            override_size; //   Override data size

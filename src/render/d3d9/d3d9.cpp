@@ -3770,25 +3770,7 @@ D3D9UpdateTexture_Override ( IDirect3DDevice9      *This,
 
             wchar_t wszInjectFileName [MAX_PATH + 2] = { };
 
-            // If -1, load from disk...
-            if (record.archive == -1)
-            {
-              if (record.method == TexLoadMethod::Streaming)
-              {
-                swprintf ( wszInjectFileName, LR"(%s\inject\textures\streaming\%08x%s)",
-                             SK_D3D11_res_root->c_str (),
-                               pDst->tex_crc32c,
-                                 L".dds" );
-              }
-
-              else if (record.method == TexLoadMethod::Blocking)
-              {
-                swprintf ( wszInjectFileName, LR"(%s\inject\textures\blocking\%08x%s)",
-                             SK_D3D11_res_root->c_str (),
-                               pDst->tex_crc32c,
-                                 L".dds");
-              }
-            }
+            tex_mgr.getInjectablePath (pDst->tex_crc32c, record, wszInjectFileName);
 
             load_op =
               new TexLoadRequest ();
@@ -8482,7 +8464,22 @@ SK_D3D9_TextureModDlg (void)
           //extern std::unordered_map <uint32_t, int32_t>            injected_refs;
           //ImGui::Text ("%lu", injected_refs [pTex->crc32c]);
           ImGui::EndGroup   ();
-          
+
+          // Textures loaded by D3DX9 are identified by the checksum of the file
+          //   they came from, but can also be replaced using this checksum.
+          if ( pTex->d3d9_tex->pixel_crc32c != 0x00 &&
+               pTex->d3d9_tex->pixel_crc32c != pTex->d3d9_tex->tex_crc32c )
+          {
+            ImGui::Text ("Pixel Checksum:  %08x", pTex->d3d9_tex->pixel_crc32c);
+
+            if (ImGui::IsItemHovered ())
+            {
+              ImGui::SetTooltip (
+                "A replacement named after this checksum works no matter how the game loads the texture."
+              );
+            }
+          }
+
           ImGui::Separator  ();
           
           static bool flip_vertical0   = false;

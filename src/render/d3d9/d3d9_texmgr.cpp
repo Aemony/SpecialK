@@ -1655,6 +1655,197 @@ safe_crc32c (uint32_t seed, _Notnull_ const void *buf, size_t size) noexcept
     ret;
 }
 
+//
+// Pixel checksums
+//
+//   The checksum of the top-level image, exactly as it sits in memory. This
+//   identifies a texture no matter how the game got the pixels there (D3DX9,
+//   locking the texture, locking a surface, ...), so it is the checksum that
+//   texture mods should prefer to be named after.
+//
+
+// Size (in bytes) of one row of pixels, or one row of 4x4 blocks
+static UINT
+SK_D3D9_RowSize (D3DFORMAT fmt, UINT width)
+{
+  const INT bpp =
+    SK_D3D9_BytesPerPixel (fmt);
+
+  if (bpp < 0) // BCn
+    return std::max (1U, (width + 3U) / 4U) * (bpp == -1 ? 8U : 16U);
+
+  return
+    static_cast <UINT> (bpp) * width;
+}
+
+// Number of rows of pixels, or rows of 4x4 blocks
+static UINT
+SK_D3D9_RowCount (D3DFORMAT fmt, UINT height)
+{
+  if (SK_D3D9_BytesPerPixel (fmt) < 0) // BCn
+    return std::max (1U, (height + 3U) / 4U);
+
+  return height;
+}
+
+// Size (in bytes) of an entire mipmap chain
+static SSIZE_T
+SK_D3D9_MipChainSize (D3DFORMAT fmt, UINT width, UINT height, UINT levels)
+{
+  SSIZE_T size = 0;
+
+  for ( UINT i = 0 ; i < levels ; ++i )
+  {
+    size +=
+      static_cast <SSIZE_T> (SK_D3D9_RowSize  (fmt, width)) *
+                             SK_D3D9_RowCount (fmt, height);
+
+    if (width  > 1) width  >>= 1;
+    if (height > 1) height >>= 1;
+  }
+
+  return size;
+}
+
+// Checksum of LOD 0, given a lock that covers all of it.
+//
+//   Returns 0 if the format is not one that can be checksummed.
+static uint32_t
+SK_D3D9_ChecksumLevel0 (const D3DSURFACE_DESC& desc, const D3DLOCKED_RECT& locked)
+{
+  auto sptr =
+    static_cast <const uint8_t *> (locked.pBits);
+
+  const UINT stride = SK_D3D9_RowSize  (desc.Format, desc.Width);
+  const UINT rows   = SK_D3D9_RowCount (desc.Format, desc.Height);
+
+  if (sptr == nullptr || stride == 0 || rows == 0)
+    return 0x00;
+
+  uint32_t crc32c_ = 0x00;
+
+  // Fast-path:  Data is packed in accordance to alignment rules
+  if (locked.Pitch == static_cast <INT> (stride))
+  {
+    crc32c_ =
+      safe_crc32c (crc32c_, sptr, static_cast <size_t> (stride) * rows);
+  }
+
+  // Slow-path:  Must checksum 1 or more rows over multiple scans
+  else
+  {
+    SK_RunOnce (tex_log->Log (L"Slow hash for unoptimally aligned texture memory activated."));
+
+    // Only the meaningful part of each row is hashed, so that the
+    //   checksum matches the fast-path's regardless of row padding.
+    for (UINT row = 0; row < rows; ++row)
+    {
+      crc32c_ =
+        safe_crc32c (crc32c_, sptr, stride);
+
+      sptr += locked.Pitch;
+    }
+  }
+
+  return crc32c_;
+}
+
+// Pixel checksum of a texture that is not currently locked, 0 if the texture
+//   cannot be locked for reading (i.e. D3DPOOL_DEFAULT without D3DUSAGE_DYNAMIC).
+static uint32_t
+SK_D3D9_ChecksumTexture (IDirect3DTexture9* pTex)
+{
+  D3DSURFACE_DESC desc   = { };
+  D3DLOCKED_RECT  locked = { };
+
+  if ( pTex == nullptr || FAILED (pTex->GetLevelDesc (0, &desc)) ||
+       ( desc.Pool == D3DPOOL_DEFAULT &&
+       ( desc.Usage & D3DUSAGE_DYNAMIC ) == 0 ) )
+  {
+    return 0x00;
+  }
+
+  if (FAILED (pTex->LockRect (0, &locked, nullptr, D3DLOCK_READONLY)))
+    return 0x00;
+
+  const uint32_t crc32c_ =
+    SK_D3D9_ChecksumLevel0 (desc, locked);
+
+  pTex->UnlockRect (0);
+
+  return crc32c_;
+}
+
+//
+// Replacement lookup
+//
+void
+SK::D3D9::TextureManager::getInjectablePath ( uint32_t         checksum,
+                                              const TexRecord& record,
+                                              wchar_t*         wszPath )
+{
+  *wszPath = L'\0';
+
+  // Stored in an archive, there is no path.
+  if (record.archive != std::numeric_limits <unsigned int>::max ())
+    return;
+
+  // An alias is stored on disk under the checksum it is an alias of
+  const uint32_t name =
+    record.file_checksum != 0x00 ? record.file_checksum
+                                 : checksum;
+
+  const wchar_t* wszSubDirs [] = {
+    ( record.method == Blocking ) ? L"blocking\\"  : L"streaming\\",
+    ( record.method == Blocking ) ? L"streaming\\" : L"blocking\\",
+                                    L""
+  };
+
+  // The load method normally says which directory the file is in, but files
+  //   placed directly in inject\textures have no method of their own.
+  for ( auto wszSubDir : wszSubDirs )
+  {
+    swprintf ( wszPath, LR"(%s\inject\textures\%s%08x.dds)",
+                 SK_D3D11_res_root->c_str (), wszSubDir, name );
+
+    if (GetFileAttributesW (wszPath) != INVALID_FILE_ATTRIBUTES)
+      return;
+  }
+
+  // Not found; report the expected location so the failure is easy to diagnose
+  swprintf ( wszPath, LR"(%s\inject\textures\%s%08x.dds)",
+               SK_D3D11_res_root->c_str (), wszSubDirs [0], name );
+}
+
+bool
+SK::D3D9::TextureManager::aliasInjectable (uint32_t checksum, uint32_t pixel_checksum)
+{
+  if ( checksum == 0x00 || pixel_checksum == 0x00 ||
+       checksum == pixel_checksum                 ||
+       (! isTextureInjectable (pixel_checksum)) )
+  {
+    return false;
+  }
+
+  // A replacement named after the texture's own checksum always wins
+  if (isTextureInjectable (checksum))
+    return false;
+
+  TexRecord record =
+    getInjectableTexture (pixel_checksum);
+
+  if (record.file_checksum == 0x00)
+      record.file_checksum = pixel_checksum;
+
+  injectable_textures [checksum] = record;
+  injectable_aliases  [checksum] = pixel_checksum;
+
+  tex_log->Log ( L"[Inject Tex] Texture %08x will use the replacement for its"
+                 L" pixel checksum (%08x)", checksum, pixel_checksum );
+
+  return true;
+}
+
 SK_LazyGlobal <std::set <uint32_t>> resample_blacklist;
 bool                                resample_blacklist_init = false;
 
@@ -1806,7 +1997,7 @@ D3DXCreateTextureFromFileInMemoryEx_Detour (
   //
   // Generic injectable textures
   //
-  if ( tex_mgr.isTextureInjectable (checksum) )
+  auto _PrepareInjection = [&](void)
   {
     tex_log->LogEx ( true, L"[Inject Tex] Injectable texture for checksum (%08x)... ",
                        checksum );
@@ -1819,25 +2010,7 @@ D3DXCreateTextureFromFileInMemoryEx_Detour (
     if (record.method == TexLoadMethod::DontCare)
       record.method = TexLoadMethod::Streaming;
 
-    // If -1, load from disk...
-    if (record.archive == -1)
-    {
-      if (record.method == TexLoadMethod::Streaming)
-      {
-        swprintf ( wszInjectFileName, L"%s\\inject\\textures\\streaming\\%08x%s",
-                     SK_D3D11_res_root->c_str (),
-                       checksum,
-                         L".dds" );
-      }
-
-      else if (record.method == TexLoadMethod::Blocking)
-      {
-        swprintf ( wszInjectFileName, L"%s\\inject\\textures\\blocking\\%08x%s",
-                     SK_D3D11_res_root->c_str (),
-                       checksum,
-                         L".dds" );
-      }
-    }
+    tex_mgr.getInjectablePath (checksum, record, wszInjectFileName);
 
     load_op           = new TexLoadRequest ();
 
@@ -1864,7 +2037,10 @@ D3DXCreateTextureFromFileInMemoryEx_Detour (
     {
       tex_log->LogEx ( false, L"blocking (deferred)\n" );
     }
-  }
+  };
+
+  if (tex_mgr.isTextureInjectable (checksum))
+    _PrepareInjection ();
 
   bool will_replace = (load_op != nullptr || resample);
 
@@ -1885,7 +2061,31 @@ D3DXCreateTextureFromFileInMemoryEx_Detour (
 
   if (SUCCEEDED (hr))
   {
+    // The file's checksum identifies this texture (and lets the cache skip
+    //   loading it again), but a replacement may have been named after the
+    //     checksum of the pixels instead; that works for any game, no matter
+    //       how it loads its textures.
+    uint32_t pixel_checksum = 0x00;
+
+    if ( tex_mgr.init && checksum != 0x00 && load_op   == nullptr
+                                          && ppTexture != nullptr
+                                         && *ppTexture != nullptr )
+    {
+      bLoading =
+        tex_mgr.injector.beginLoad ();
+
+      pixel_checksum =
+        SK_D3D9_ChecksumTexture (*ppTexture);
+
+      tex_mgr.injector.endLoad (bLoading);
+
+      if (tex_mgr.aliasInjectable (checksum, pixel_checksum))
+        _PrepareInjection ();
+    }
+
     new ISKTextureD3D9 (ppTexture, SrcDataSize, checksum);
+
+    static_cast <ISKTextureD3D9 *> (*ppTexture)->pixel_crc32c = pixel_checksum;
 
     if ( load_op != nullptr && ( load_op->type == TexLoadRequest::Stream ||
                                  load_op->type == TexLoadRequest::Immediate ) )
@@ -4792,6 +4992,24 @@ SK::D3D9::TextureManager::refreshDataSources (void)
   }
 
   File_Close  (&arc_stream.file);
+
+  // Textures that are already loaded will not be checksummed again, so the
+  //   aliases learned for them have to be carried over to the new list.
+  for ( const auto& alias : injectable_aliases )
+  {
+    if ( alias.second != 0x00                &&
+         isTextureInjectable (alias.second)  &&
+      (! isTextureInjectable (alias.first)) )
+    {
+      TexRecord record =
+        getInjectableTexture (alias.second);
+
+      if (record.file_checksum == 0x00)
+          record.file_checksum = alias.second;
+
+      injectable_textures [alias.first] = record;
+    }
+  }
 }
 
 
@@ -4847,25 +5065,7 @@ SK::D3D9::TextureManager::TextureManager::reloadTexture (uint32_t checksum)
   bool remap_stream =
     injector.isStreaming (checksum);
 
-  // If -1, load from disk...
-  if (record.archive == std::numeric_limits <unsigned int>::max ())
-  {
-    if (record.method == Streaming)
-    {
-      swprintf ( wszInjectFileName, L"%s\\inject\\textures\\streaming\\%08x%s",
-                   SK_D3D11_res_root->c_str (),
-                     checksum,
-                       L".dds" );
-    }
-
-    else if (record.method == Blocking)
-    {
-      swprintf ( wszInjectFileName, L"%s\\inject\\textures\\blocking\\%08x%s",
-                   SK_D3D11_res_root->c_str (),
-                     checksum,
-                       L".dds" );
-    }
-  }
+  getInjectablePath (checksum, record, wszInjectFileName);
 
   load_op           = new TexLoadRequest ();
 
@@ -5304,82 +5504,17 @@ ISKTextureD3D9::unlockLevel ( UINT                           Level,
 
   if (this->tex_crc32c == 0x00 && dirty && lock_lvl0_hashable && Level == 0 && config.textures.d3d9_mod)
   {
-    auto sptr =
-      static_cast <const uint8_t *> (
-        lock_lvl0.pBits
-      );
-
-    uint32_t crc32c_ = 0x00;
-
     D3DSURFACE_DESC             desc = { };
     pTex->GetLevelDesc (Level, &desc);
 
-    const INT bpp =
-      SK_D3D9_BytesPerPixel (desc.Format);
+    const uint32_t crc32c_ =
+      SK_D3D9_ChecksumLevel0 (desc, lock_lvl0);
 
-    // BCn compressed textures are stored as rows of 4x4 blocks.
-    const bool BCn_tex = bpp < 0;
-
-    // Size (in bytes) of one row of pixels, or one row of blocks
-    auto _RowSize = [&](UINT width) -> UINT
-    {
-      if (BCn_tex)
-        return std::max (1U, (width + 3U) / 4U) * (bpp == -1 ? 8U : 16U);
-
-      return
-        static_cast <UINT> (bpp) * width;
-    };
-
-    // Number of rows of pixels, or rows of blocks
-    auto _RowCount = [&](UINT height) -> UINT
-    {
-      if (BCn_tex)
-        return std::max (1U, (height + 3U) / 4U);
-
-      return height;
-    };
-
-    const UINT stride = _RowSize  (desc.Width);
-    const UINT rows   = _RowCount (desc.Height);
-
-    // Fast-path:  Data is packed in accordance to alignment rules
-    if (lock_lvl0.Pitch == static_cast <INT> (stride))
-    {
-      crc32c_ =
-        safe_crc32c (crc32c_, sptr, static_cast <size_t> (stride) * rows);
-    }
-
-    // Slow-path:  Must checksum 1 or more rows over multiple scans
-    else if (sptr != nullptr)
-    {
-      SK_RunOnce (tex_log->Log (L"Slow hash for unoptimally aligned texture memory activated."));
-
-      // Only the meaningful part of each row is hashed, so that the
-      //   checksum matches the fast-path's regardless of row padding.
-      for (UINT row = 0; row < rows; ++row)
-      {
-        crc32c_ =
-          safe_crc32c (crc32c_, sptr, stride);
-
-        sptr += lock_lvl0.Pitch;
-      }
-    }
-
-
-    this->tex_crc32c = crc32c_;
-    this->tex_size   = 0;
-
-    UINT W = desc.Width,
-         H = desc.Height;
-
-    for (UINT i = 0; i < pTex->GetLevelCount (); i++)
-    {
-      this->tex_size +=
-        static_cast <SSIZE_T> (_RowSize (W)) * _RowCount (H);
-
-      if (W > 1) W >>= 1;
-      if (H > 1) H >>= 1;
-    }
+    this->tex_crc32c   = crc32c_;
+    this->pixel_crc32c = crc32c_;
+    this->tex_size     =
+      SK_D3D9_MipChainSize ( desc.Format, desc.Width, desc.Height,
+                               pTex->GetLevelCount () );
 
     hr =
       _NativeUnlock ();
@@ -5448,25 +5583,7 @@ ISKTextureD3D9::unlockLevel ( UINT                           Level,
           if (record.method == TexLoadMethod::DontCare)
             record.method = TexLoadMethod::Streaming;
 
-          // If -1, load from disk...
-          if (record.archive == -1)
-          {
-            if (record.method == TexLoadMethod::Streaming)
-            {
-              swprintf ( wszInjectFileName, L"%s\\inject\\textures\\streaming\\%08x%s",
-                           SK_D3D11_res_root->c_str (),
-                             crc32c_,
-                               L".dds" );
-            }
-
-            else if (record.method == TexLoadMethod::Blocking)
-            {
-              swprintf ( wszInjectFileName, L"%s\\inject\\textures\\blocking\\%08x%s",
-                           SK_D3D11_res_root->c_str (),
-                             crc32c_,
-                               L".dds" );
-            }
-          }
+          tex_mgr.getInjectablePath (crc32c_, record, wszInjectFileName);
 
           load_op           = new TexLoadRequest ();
 
