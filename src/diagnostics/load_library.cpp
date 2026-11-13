@@ -463,6 +463,11 @@ SK_TraceLoadLibrary (       HMODULE hCallingMod,
     }
   }
 
+  // D3DX9 is usually a static import of whatever was just loaded, so the name
+  //   of the DLL is not a reliable way to tell when this is necessary.
+  extern void SK_D3D9_HookD3DX9 (bool apply_immediately);
+              SK_D3D9_HookD3DX9 (true);
+
   if (hCallingMod != SK_GetDLL ())
   {
     if ( (! (SK_GetDLLRole () & DLL_ROLE::D3D9)) && config.apis.d3d9.hook &&
