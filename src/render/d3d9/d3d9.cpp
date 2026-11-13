@@ -2938,14 +2938,35 @@ HRESULT
 STDMETHODCALLTYPE
 D3D9GetTexture_Override ( IDirect3DDevice9      *This,
                      _In_ DWORD                  Stage,
-                    _Out_ IDirect3DBaseTexture9 *pTexture )
+                    _Out_ IDirect3DBaseTexture9 **ppTexture )
 {
 //  dll_log.Log (L"Impure Get Texture");
 
-  return
+  const HRESULT hr =
     D3D9Device_GetTexture_Original ( This,
                                        Stage,
-                                         pTexture );
+                                         ppTexture );
+
+  // The device was given the native texture (or its override) by SetTexture,
+  //   but the game only knows about the wrapper and expects to get back the
+  //     same pointer it set.
+  if (SUCCEEDED (hr) && ppTexture != nullptr && *ppTexture != nullptr)
+  {
+    if (! SK_D3D9_GetTextureManager ().injector.isInjectionThread ())
+    {
+      ISKTextureD3D9* pWrapper =
+        ISKTextureD3D9::fromNative (*ppTexture);
+
+      if (pWrapper != nullptr)
+      {
+        pWrapper->AddRef ();
+
+        std::exchange (*ppTexture, pWrapper)->Release ();
+      }
+    }
+  }
+
+  return hr;
 }
 
 __declspec (noinline)
@@ -4804,6 +4825,17 @@ SK_D3D9_HookDeviceAndSwapchain (
                         D3D9Device_SetRenderState_pfn);
 
       if (SK_D3D9_Trampoline (D3D9Device, SetRenderState)) ++num_hooked;
+    }
+
+    if (! SK_D3D9_Trampoline (D3D9Device, GetTexture))
+    {
+      D3D9_INTERCEPT ( &pDevice, 64,
+                       "IDirect3DDevice9::GetTexture",
+                        D3D9GetTexture_Override,
+                        D3D9Device_GetTexture_Original,
+                        D3D9Device_GetTexture_pfn );
+
+      if (SK_D3D9_Trampoline (D3D9Device, GetTexture)) ++num_hooked;
     }
 
     if (! SK_D3D9_Trampoline (D3D9Device, SetTexture))

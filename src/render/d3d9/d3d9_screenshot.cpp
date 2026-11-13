@@ -150,8 +150,11 @@ SK_D3D9_Screenshot::SK_D3D9_Screenshot (const SK_ComPtr <IDirect3DDevice9>& pDev
 void
 SK_D3D9_Screenshot::dispose (void) noexcept
 {
-  if (outstanding_screenshots.contains (pBackbufferSurface))
-      outstanding_screenshots.erase    (pBackbufferSurface);
+  // This is the surface that was registered as outstanding in the constructor,
+  //   erasing the backbuffer instead would leave the entry behind forever and
+  //     the texture manager would never be allowed to reset the device.
+  if (outstanding_screenshots.contains (pSurfScreenshot))
+      outstanding_screenshots.erase    (pSurfScreenshot);
 
   pBackbufferSurface     = nullptr;
   pSwapChain             = nullptr;
