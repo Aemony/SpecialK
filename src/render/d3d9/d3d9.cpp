@@ -808,6 +808,10 @@ SK_D3DX9_GetModule (bool acquire = false)
   { 
     SK_RunOnce (  std::atexit ( []
     {FreeLibrary (hModD3DX9_43);}) );
+
+    // A game that loads this DLL after we have will not trigger a
+    //   library load notification, so hook the texture loaders now.
+    SK_RunOnce (SK_D3D9_HookD3DX9 (true));
   }
 
   return
@@ -940,15 +944,6 @@ const PALETTEENTRY           *pSrcPalette )
   return hr;
 }
 
-D3DXCreateTextureFromFileInMemoryEx_pfn
-D3DXCreateTextureFromFileInMemoryEx_Original = nullptr;
-
-D3DXCreateVolumeTextureFromFileInMemoryEx_pfn
-D3DXCreateVolumeTextureFromFileInMemoryEx_Original = nullptr;
-
-D3DXCreateCubeTextureFromFileInMemoryEx_pfn
-D3DXCreateCubeTextureFromFileInMemoryEx_Original = nullptr;
-
 HRESULT
 WINAPI
 SK_D3DXCreateTextureFromFileInMemoryEx (
@@ -983,6 +978,11 @@ SK_D3DXCreateTextureFromFileInMemoryEx (
 
   bool bLoading =
     tex_mgr.injector.beginLoad ();
+
+  // Prefer the version of D3DX9 that the game itself is calling into
+  const D3DXCreateTextureFromFileInMemoryEx_pfn
+      D3DXCreateTextureFromFileInMemoryEx_Original =
+        SK_D3DX9_ActiveHooks ().InMemoryEx;
 
   if (D3DXCreateTextureFromFileInMemoryEx_Original != nullptr) hr =
       D3DXCreateTextureFromFileInMemoryEx_Original (
@@ -1021,12 +1021,6 @@ SK_D3DXCreateTextureFromFileInMemoryEx (
 
   return hr;
 }
-
-D3DXCreateTextureFromFileExW_pfn
-D3DXCreateTextureFromFileExW_Original = nullptr;
-
-D3DXCreateTextureFromFileExA_pfn
-D3DXCreateTextureFromFileExA_Original = nullptr;
 
 HMODULE
 SK_D3DX9_Unpack (void)
@@ -2954,8 +2948,12 @@ D3D9GetTexture_Override ( IDirect3DDevice9      *This,
   {
     if (! SK_D3D9_GetTextureManager ().injector.isInjectionThread ())
     {
-      ISKTextureD3D9* pWrapper =
+      IDirect3DBaseTexture9* pWrapper =
         ISKTextureD3D9::fromNative (*ppTexture);
+
+      // Cube and volume textures
+      if (pWrapper == nullptr)
+          pWrapper = SK_D3D9_BaseWrapperFromNative (*ppTexture);
 
       if (pWrapper != nullptr)
       {
@@ -3657,6 +3655,26 @@ D3D9UpdateTexture_Override ( IDirect3DDevice9      *This,
   {
     dst_is_wrapped = true;
     pRealDest      = static_cast <ISKTextureD3D9 *> (pDestinationTexture)->pTex;
+  }
+
+  // Cube and volume textures only need to be unwrapped; a replacement is
+  //   never written to, so the copy always involves the game's own data.
+  if (! src_is_wrapped)
+  {
+    const SK_D3D9_WrappedTexture* pWrapped =
+      SK_D3D9_GetWrappedTexture (pSourceTexture);
+
+    if (pWrapped != nullptr)
+      pRealSource = pWrapped->pNative;
+  }
+
+  if (! dst_is_wrapped)
+  {
+    const SK_D3D9_WrappedTexture* pWrapped =
+      SK_D3D9_GetWrappedTexture (pDestinationTexture);
+
+    if (pWrapped != nullptr)
+      pRealDest = pWrapped->pNative;
   }
 
 
