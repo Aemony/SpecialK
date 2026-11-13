@@ -786,6 +786,10 @@ struct SK_D3D9_TextureStorageBase
   Concurrency::
   concurrent_unordered_map <uint32_t, int32_t>            _injected_refs;
 
+  // Every wrapper that has been constructed and not yet deleted; used to
+  //   validate wrapper pointers recovered from a native texture's private data.
+  SK_ThreadSafe_HashSet <ISKTextureD3D9 *>                _live_wrappers;
+
   SK_ThreadSafe_HashSet <IDirect3DSurface9 *>             _outstanding_screenshots;
                                            // Not excellent screenshots, but screenhots
                                            //   that aren't finished yet and we can't reset
@@ -818,7 +822,70 @@ public:
     Override = 2
   };
 
-  virtual ~ISKTextureD3D9 (void) { };
+  virtual ~ISKTextureD3D9 (void)
+  {
+    SK_D3D9_GetBasicTextureDataStore ()._live_wrappers.erase (this);
+  };
+
+  // Tags a native texture with the wrapper that is standing in for it, so that
+  //   the wrapper can be found again when all we have is the native pointer
+  //     (i.e. IDirect3DDevice9::GetTexture).
+  void tagNative (IDirect3DBaseTexture9* pNative)
+  {
+    if (pNative == nullptr || pNative == this)
+      return;
+
+    // Never tag through another wrapper; it forwards to a texture it owns.
+    void*                                               dontcare = nullptr;
+    if (pNative->QueryInterface (IID_SKTextureD3D9, &dontcare) == S_OK)
+      return;
+
+    ISKTextureD3D9* pThis = this;
+
+    pNative->SetPrivateData (
+      IID_SKTextureD3D9, &pThis, sizeof (pThis), 0x0
+    );
+  }
+
+  // The override texture is shared by every wrapper with the same checksum,
+  //   so it is tagged as it is bound rather than when it is assigned.
+  void tagOverride (void)
+  {
+    if (pTexOverride != nullptr && std::exchange (pTaggedOverride, pTexOverride) != pTexOverride)
+      tagNative (pTexOverride);
+  }
+
+  // Returns the live wrapper that draws using pNative, or nullptr.
+  //
+  //   Does not add a reference.
+  static ISKTextureD3D9* fromNative (IDirect3DBaseTexture9* pNative)
+  {
+    if (pNative == nullptr)
+      return nullptr;
+
+    ISKTextureD3D9* pWrapper = nullptr;
+    DWORD           dwSize   = sizeof (pWrapper);
+
+    if ( FAILED (pNative->GetPrivateData (IID_SKTextureD3D9, &pWrapper, &dwSize)) ||
+                                    dwSize != sizeof (pWrapper)                 ||
+                                              nullptr == pWrapper )
+    {
+      return nullptr;
+    }
+
+    // The tag outlives the wrapper if the device still has the native texture bound
+    if (! SK_D3D9_GetBasicTextureDataStore ()._live_wrappers.contains (pWrapper))
+      return nullptr;
+
+    if (  pWrapper->freed || ReadAcquire (&pWrapper->refs) <= 0 ||
+        ( pWrapper->pTex         != pNative &&
+          pWrapper->pTexOverride != pNative ) )
+    {
+      return nullptr;
+    }
+
+    return pWrapper;
+  }
 
   ISKTextureD3D9 (IDirect3DTexture9 **ppTex, SIZE_T size, uint32_t crc32c)
   {
@@ -838,6 +905,10 @@ public:
       InterlockedExchange (&refs, 1);
 
       img_to_use    = ContentPreference::DontCare;
+
+      SK_D3D9_GetBasicTextureDataStore ()._live_wrappers.emplace (this);
+
+      tagNative (pTex);
   };
 
   /*** IUnknown methods ***/
@@ -888,6 +959,9 @@ public:
         if ( FAILED (pTex->QueryInterface (IID_SKTextureD3D9, &dontcare)) &&
                                   std::exchange (freed, true) == false )
         {
+          // The device may keep the native texture alive beyond this point
+          pTex->FreePrivateData (IID_SKTextureD3D9);
+
           std::exchange (pTex, nullptr)->Release ();
 
           if (std::exchange (pTexOverride, nullptr) != nullptr)
@@ -1101,9 +1175,31 @@ public:
     {
       if (Level == 0)
       {
-        lock_lvl0 = *pLockedRect;
-        dirty     = true;
-        begin_map = SK_QueryPerf ();
+        lock_lvl0_hashable = false;
+
+        // A read-only lock cannot change the contents
+        if ((Flags & D3DLOCK_READONLY) == 0 && pLockedRect != nullptr)
+        {
+          lock_lvl0 = *pLockedRect;
+          dirty     = true;
+          begin_map = SK_QueryPerf ();
+
+          // The checksum covers the entire top-level image; pBits only points
+          //   to the start of that image if the whole thing is locked.
+          lock_lvl0_hashable = true;
+
+          if (pRect != nullptr)
+          {
+            D3DSURFACE_DESC desc = { };
+
+            lock_lvl0_hashable =
+              SUCCEEDED (pTex->GetLevelDesc (0, &desc))    &&
+                    pRect->left   == 0                     &&
+                    pRect->top    == 0                     &&
+                    pRect->right  == (LONG)desc.Width      &&
+                    pRect->bottom == (LONG)desc.Height;
+          }
+        }
       }
     }
 
@@ -1158,6 +1254,9 @@ public:
                                     //
                                     //
 
+  IDirect3DTexture9* pTaggedOverride = nullptr; // Last override tagged with this wrapper
+
+  bool               lock_lvl0_hashable = false;// LOD 0 is locked for writing, in its entirety
   D3DLOCKED_RECT     lock_lvl0  = {      };
   int                uses       =      0;
   LARGE_INTEGER      begin_map  = { 0, 0 };

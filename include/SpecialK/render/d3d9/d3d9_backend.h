@@ -411,7 +411,7 @@ using D3D9Device_DrawIndexedPrimitiveUP_pfn = HRESULT (STDMETHODCALLTYPE *)
 using D3D9Device_GetTexture_pfn = HRESULT (STDMETHODCALLTYPE *)
   (     IDirect3DDevice9      *This,
    _In_ DWORD                  Sampler,
-  _Out_ IDirect3DBaseTexture9 *pTexture);
+  _Out_ IDirect3DBaseTexture9 **ppTexture);
 
 using D3D9Device_SetTexture_pfn = HRESULT (STDMETHODCALLTYPE *)
   (     IDirect3DDevice9      *This,

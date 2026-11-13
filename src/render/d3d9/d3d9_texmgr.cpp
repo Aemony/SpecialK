@@ -468,6 +468,10 @@ D3D9SetTexture_Detour (
 
     // XXX: Why are we assigning this a second time?
     pTexture = pSKTex->getDrawTexture ();
+
+    // So that GetTexture (...) can find its way back to the wrapper
+    if (pTexture != nullptr && pTexture == pSKTex->pTexOverride)
+      pSKTex->tagOverride ();
   }
 
 #if 0
@@ -1669,8 +1673,8 @@ D3DXCreateTextureFromFileInMemoryEx_Detour (
   if ( pDev9Ex.p != nullptr &&
             Pool == D3DPOOL_MANAGED )
   {
-    Pool  =  D3DPOOL_MANAGED_EX;
-    Usage = D3DUSAGE_DYNAMIC;
+    Pool   =  D3DPOOL_MANAGED_EX;
+    Usage |= D3DUSAGE_DYNAMIC;
   }
 
   SK::D3D9::TextureManager& tex_mgr =
@@ -1736,7 +1740,7 @@ D3DXCreateTextureFromFileInMemoryEx_Detour (
         (! tex_mgr.isTextureInjectable (checksum)) ) )//|| (
                                     //config.textures.d3d11.cache /*||
                                     //config.textures.on_demand_dump*/ ) )
-    Usage = D3DUSAGE_DYNAMIC;
+    Usage |= D3DUSAGE_DYNAMIC;
 
 
   bool bLoading =
@@ -2193,8 +2197,8 @@ D3DXCreateVolumeTextureFromFileInMemoryEx_Detour (
   if ( pDev9Ex.p != nullptr &&
             Pool == D3DPOOL_MANAGED )
   {
-    Pool  =  D3DPOOL_MANAGED_EX;
-    Usage = D3DUSAGE_DYNAMIC;
+    Pool   =  D3DPOOL_MANAGED_EX;
+    Usage |= D3DUSAGE_DYNAMIC;
   }
 
 //Width     = D3DX_DEFAULT;
@@ -2243,8 +2247,8 @@ D3DXCreateCubeTextureFromFileInMemoryEx_Detour (
   if ( pDev9Ex.p != nullptr &&
             Pool == D3DPOOL_MANAGED )
   {
-    Pool  =  D3DPOOL_MANAGED_EX;
-    Usage = D3DUSAGE_DYNAMIC;
+    Pool   =  D3DPOOL_MANAGED_EX;
+    Usage |= D3DUSAGE_DYNAMIC;
   }
 
 //Size      = D3DX_DEFAULT;
@@ -3202,10 +3206,31 @@ SK::D3D9::TextureManager::reset (void)
       L" delaying device reset..."
     );
 
-    while (! outstanding_screenshots.empty ())
-      ;
+    // Captures are finished by the screenshot queue, which normally runs on
+    //   this same thread during Present; spinning here without draining the
+    //     queue ourselves could never make progress.
+    extern void
+    SK_D3D9_ProcessScreenshotQueueEx ( SK_ScreenshotStage stage_,
+                                       bool               wait,
+                                       bool               purge );
 
-    tex_log->LogEx (false, L"done!\n");
+    SK_D3D9_ProcessScreenshotQueueEx (
+      SK_ScreenshotStage::_FlushQueue, true, false
+    );
+
+    // Anything still outstanding belongs to another thread; give it a bounded
+    //   amount of time rather than hanging the game's device reset.
+    const DWORD dwTimeout = SK_timeGetTime () + 500UL;
+
+    while ( (! outstanding_screenshots.empty ()) &&
+                  SK_timeGetTime () < dwTimeout )
+    {
+      SK_SleepEx (1UL, FALSE);
+    }
+
+    tex_log->LogEx ( false, outstanding_screenshots.empty () ?
+                                                 L"done!\n" :
+                                            L"timed out!\n" );
   }
 
   int iters = 0;
@@ -3924,7 +3949,7 @@ SK::D3D9::TextureManager::refreshDataSources (void)
 
             TexRecord rec = { };
 
-            rec.size    = liSize.LowPart;
+            rec.size    = fsize.LowPart;
             rec.archive = std::numeric_limits <unsigned int>::max ();
             rec.method  = Blocking;
             InterlockedExchange (
@@ -4451,7 +4476,7 @@ ISKTextureD3D9::UnlockRect (UINT Level)
 
   HRESULT hr = E_FAIL;
 
-  if (this->tex_crc32c == 0x00 && dirty && Level == 0   && config.textures.d3d9_mod)
+  if (this->tex_crc32c == 0x00 && dirty && lock_lvl0_hashable && Level == 0 && config.textures.d3d9_mod)
   {
     auto sptr =
       static_cast <const uint8_t *> (
@@ -4463,45 +4488,52 @@ ISKTextureD3D9::UnlockRect (UINT Level)
     D3DSURFACE_DESC             desc = { };
     pTex->GetLevelDesc (Level, &desc);
 
-    INT stride =
+    const INT bpp =
       SK_D3D9_BytesPerPixel (desc.Format);
 
-    // BCn compressed textures have to be read 4-rows at a time.
-    bool BCn_tex = stride < 0;
+    // BCn compressed textures are stored as rows of 4x4 blocks.
+    const bool BCn_tex = bpp < 0;
 
-    if (stride < 0)
+    // Size (in bytes) of one row of pixels, or one row of blocks
+    auto _RowSize = [&](UINT width) -> UINT
     {
-      if (stride == -1)
-        stride = std::max (1UL, ((desc.Width + 3UL) / 4UL) ) * 8UL;
-      else
-        stride = std::max (1UL, ((desc.Width + 3UL) / 4UL) ) * 16UL;
-    }
+      if (BCn_tex)
+        return std::max (1U, (width + 3U) / 4U) * (bpp == -1 ? 8U : 16U);
 
-    else
-      stride *= desc.Width;
+      return
+        static_cast <UINT> (bpp) * width;
+    };
 
+    // Number of rows of pixels, or rows of blocks
+    auto _RowCount = [&](UINT height) -> UINT
+    {
+      if (BCn_tex)
+        return std::max (1U, (height + 3U) / 4U);
 
+      return height;
+    };
+
+    const UINT stride = _RowSize  (desc.Width);
+    const UINT rows   = _RowCount (desc.Height);
 
     // Fast-path:  Data is packed in accordance to alignment rules
-    if (lock_lvl0.Pitch == stride)
+    if (lock_lvl0.Pitch == static_cast <INT> (stride))
     {
-      unsigned int lod_size = BCn_tex ? stride * (desc.Height / 4 +
-                                                  desc.Height % 4) :
-                                        stride * desc.Height;
-
       crc32c_ =
-        safe_crc32c (crc32c_, sptr, lod_size );
+        safe_crc32c (crc32c_, sptr, static_cast <size_t> (stride) * rows);
     }
 
     // Slow-path:  Must checksum 1 or more rows over multiple scans
-    else
+    else if (sptr != nullptr)
     {
       SK_RunOnce (tex_log->Log (L"Slow hash for unoptimally aligned texture memory activated."));
 
-      for (size_t h = 0; h < desc.Height; BCn_tex ? h += 4 : ++h)
+      // Only the meaningful part of each row is hashed, so that the
+      //   checksum matches the fast-path's regardless of row padding.
+      for (UINT row = 0; row < rows; ++row)
       {
         crc32c_ =
-          safe_crc32c (crc32c_, sptr, stride * ( BCn_tex ? 4 : 1 ));
+          safe_crc32c (crc32c_, sptr, stride);
 
         sptr += lock_lvl0.Pitch;
       }
@@ -4511,11 +4543,13 @@ ISKTextureD3D9::UnlockRect (UINT Level)
     this->tex_crc32c = crc32c_;
     this->tex_size   = 0;
 
-    INT W = desc.Width; INT H = desc.Height;
+    UINT W = desc.Width,
+         H = desc.Height;
 
     for (UINT i = 0; i < pTex->GetLevelCount (); i++)
     {
-      this->tex_size += ( lock_lvl0.Pitch * W );
+      this->tex_size +=
+        static_cast <SSIZE_T> (_RowSize (W)) * _RowCount (H);
 
       if (W > 1) W >>= 1;
       if (H > 1) H >>= 1;
@@ -4748,7 +4782,10 @@ ISKTextureD3D9::UnlockRect (UINT Level)
     hr = pTex->UnlockRect (Level);
   }
   if (Level == 0)
-    dirty = false;
+  {
+    dirty              = false;
+    lock_lvl0_hashable = false;
+  }
 
   return hr;
 }
