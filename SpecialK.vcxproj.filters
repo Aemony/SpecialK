@@ -3818,6 +3818,9 @@
     <ClCompile Include="src\render\d3d9\d3d9_texmgr.cpp">
       <Filter>Source Files\Backends\Render\D3D9</Filter>
     </ClCompile>
+    <ClCompile Include="src\render\d3d9\mod_tools\d3d9_mod_tools.cpp">
+      <Filter>Source Files\Backends\Render\D3D9</Filter>
+    </ClCompile>
     <ClCompile Include="src\render\d3d11\utility\d3d11_tex_util.cpp">
       <Filter>Source Files\Backends\Render\D3D11\Textures</Filter>
     </ClCompile>

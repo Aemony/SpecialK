@@ -2218,6 +2218,7 @@ if exist "$(TargetDir)$(TargetName).exp" ( del "$(TargetDir)$(TargetName).exp" )
     <ClCompile Include="src\render\d3d12\d3d12.cpp" />
     <ClCompile Include="src\render\d3d8\d3d8.cpp" />
     <ClCompile Include="src\render\d3d9\d3d9_texmgr.cpp" />
+    <ClCompile Include="src\render\d3d9\mod_tools\d3d9_mod_tools.cpp" />
     <ClCompile Include="src\render\ddraw\ddraw.cpp" />
     <ClCompile Include="src\diagnostics\compatibility.cpp" />
     <ClCompile Include="src\diagnostics\crash_handler.cpp" />
