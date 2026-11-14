@@ -2972,6 +2972,35 @@ D3D9GetTexture_Override ( IDirect3DDevice9      *This,
   return hr;
 }
 
+//
+// IDirect3DDevice9::SetTexture is not one function
+//
+//   d3d9.dll fills in a device's vftable according to how the device was
+//   created; a device using D3DCREATE_MULTITHREADED gets a different SetTexture
+//   than one that is not. Hooks are installed using a dummy device that will
+//   not necessarily match the game's (Special K forces multithreading on the
+//   game's device when texture mods are enabled, for one).
+//
+//   Missing this hook is fatal to texture mods: the game would hand a texture
+//   wrapper straight to Direct3D, which crashes the first time it draws.
+//   Every implementation that turns up is therefore hooked, each with its own
+//   trampoline, and all of them are routed through D3D9SetTexture_Override.
+//
+static constexpr int             SK_D3D9_MaxSetTextureVariants = 4;
+
+struct SK_D3D9_SetTextureVariant {
+  void*                     pTarget  = nullptr;
+  D3D9Device_SetTexture_pfn Original = nullptr;
+};
+
+static SK_D3D9_SetTextureVariant SK_D3D9_SetTextureVariants [SK_D3D9_MaxSetTextureVariants] = { };
+static volatile LONG             SK_D3D9_NumSetTextureVariants = 0;
+static void*                     SK_D3D9_SetTextureFirstTarget = nullptr; // Uses D3D9Device_SetTexture_Original
+
+// The trampoline for the implementation that the calling thread came in through
+static thread_local
+  D3D9Device_SetTexture_pfn      SK_D3D9_SetTextureCallerOriginal = nullptr;
+
 __declspec (noinline)
 HRESULT
 STDMETHODCALLTYPE
@@ -2979,10 +3008,104 @@ D3D9SetTexture_Override ( IDirect3DDevice9      *This,
                     _In_  DWORD                  Stage,
                     _In_  IDirect3DBaseTexture9 *pTexture )
 {
+  const D3D9Device_SetTexture_pfn
+      SetTexture_Original =
+        SK_D3D9_SetTextureCallerOriginal != nullptr ?
+        SK_D3D9_SetTextureCallerOriginal            :
+          D3D9Device_SetTexture_Original;
+
   return
-    D3D9Device_SetTexture_Original ( This,
-                                       Stage,
-                                         pTexture );
+    SetTexture_Original ( This,
+                            Stage,
+                              pTexture );
+}
+
+template <int Variant>
+HRESULT
+STDMETHODCALLTYPE
+D3D9SetTexture_VariantThunk ( IDirect3DDevice9      *This,
+                        _In_  DWORD                  Stage,
+                        _In_  IDirect3DBaseTexture9 *pTexture )
+{
+  const D3D9Device_SetTexture_pfn pOuter =
+    std::exchange ( SK_D3D9_SetTextureCallerOriginal,
+                    SK_D3D9_SetTextureVariants [Variant].Original );
+
+  // This is hooked by the texture manager, which is the whole point.
+  const HRESULT hr =
+    D3D9SetTexture_Override (This, Stage, pTexture);
+
+  SK_D3D9_SetTextureCallerOriginal = pOuter;
+
+  return hr;
+}
+
+// Hooks SetTexture for pDevice, if its implementation has not been seen before.
+//
+//   pDevice must be the real device, not Special K's wrapper for it.
+//
+//   Not every device passes through SK_D3D9_HookDeviceAndSwapchain (...) when
+//   it is created (IDirect3D9Ex::CreateDevice is normally left alone), so this
+//   is also called before a texture is created; that guarantees no texture is
+//   ever wrapped for a device whose SetTexture cannot unwrap it.
+void
+SK_D3D9_HookSetTextureVariant (IDirect3DDevice9* pDevice)
+{
+  if (pDevice == nullptr || SK_D3D9_SetTextureFirstTarget == nullptr)
+    return;
+
+  void* const pTarget =
+    (*reinterpret_cast <void ***> (pDevice)) [65];
+
+  if (pTarget == SK_D3D9_SetTextureFirstTarget)
+    return;
+
+  static const D3D9Device_SetTexture_pfn thunks [SK_D3D9_MaxSetTextureVariants] = {
+    D3D9SetTexture_VariantThunk <0>, D3D9SetTexture_VariantThunk <1>,
+    D3D9SetTexture_VariantThunk <2>, D3D9SetTexture_VariantThunk <3>
+  };
+
+  static SK_Thread_HybridSpinlock lock;
+  std::scoped_lock <SK_Thread_HybridSpinlock>
+        scope_lock (lock);
+
+  const LONG num_variants =
+    ReadAcquire (&SK_D3D9_NumSetTextureVariants);
+
+  for ( LONG i = 0 ; i < num_variants ; ++i )
+  {
+    if (SK_D3D9_SetTextureVariants [i].pTarget == pTarget)
+      return;
+  }
+
+  if (num_variants >= SK_D3D9_MaxSetTextureVariants)
+  {
+    SK_RunOnce (
+      SK_LOGi0 (L"Too many implementations of IDirect3DDevice9::SetTexture to hook them all!")
+    );
+
+    return;
+  }
+
+  SK_D3D9_SetTextureVariant& variant =
+    SK_D3D9_SetTextureVariants [num_variants];
+
+  if ( MH_OK ==
+         SK_CreateFuncHook (      L"IDirect3DDevice9::SetTexture (Variant)",
+                                    pTarget,
+                                    thunks [num_variants],
+           static_cast_p2p <void> (&variant.Original) ) )
+  {
+    variant.pTarget = pTarget;
+
+    // The thunk for this slot cannot run until the hook is enabled
+    InterlockedIncrement (&SK_D3D9_NumSetTextureVariants);
+
+    SK_EnableHook (pTarget);
+
+    SK_LOGi0 ( L"Hooked an additional implementation of IDirect3DDevice9::SetTexture (%p)",
+                 pTarget );
+  }
 }
 
 __declspec (noinline)
@@ -3146,6 +3269,10 @@ D3D9CreateVolumeTexture_Override ( IDirect3DDevice9         *This,
                                    IDirect3DVolumeTexture9 **ppVolumeTexture,
                                    HANDLE                   *pSharedHandle )
 {
+  // D3DX9 creates the textures it loads through here, and those get wrapped
+  if (config.textures.d3d9_mod)
+    SK_D3D9_HookSetTextureVariant (This);
+
   SK_ComQIPtr <IDirect3DDevice9Ex>
        pDev9Ex (This);
   if ( pDev9Ex.p != nullptr &&
@@ -3176,6 +3303,10 @@ D3D9CreateCubeTexture_Override ( IDirect3DDevice9       *This,
                                  IDirect3DCubeTexture9 **ppCubeTexture,
                                  HANDLE                 *pSharedHandle )
 {
+  // D3DX9 creates the textures it loads through here, and those get wrapped
+  if (config.textures.d3d9_mod)
+    SK_D3D9_HookSetTextureVariant (This);
+
   SK_ComQIPtr <IDirect3DDevice9Ex>
        pDev9Ex (This);
   if ( pDev9Ex.p != nullptr &&
@@ -4844,7 +4975,13 @@ SK_D3D9_HookDeviceAndSwapchain (
                         D3D9Device_SetTexture_Original,
                         D3D9Device_SetTexture_pfn );
 
-      if (SK_D3D9_Trampoline (D3D9Device, SetTexture)) ++num_hooked;
+      if (SK_D3D9_Trampoline (D3D9Device, SetTexture))
+      {
+        ++num_hooked;
+
+        SK_D3D9_SetTextureFirstTarget =
+          (*reinterpret_cast <void ***> (pDevice.p)) [65];
+      }
     }
 
     if (! SK_D3D9_Trampoline (D3D9Device, SetSamplerState))
@@ -5024,6 +5161,10 @@ SK_D3D9_HookDeviceAndSwapchain (
   }
 
   SK_Thread_SpinUntilAtomicMin (&__hooked, 2);
+
+  // Everything above is hooked using the first device that comes through here,
+  //   but this device may not use the same SetTexture as that one.
+  SK_D3D9_HookSetTextureVariant (pDevice);
 
   return num_hooked;
 }
