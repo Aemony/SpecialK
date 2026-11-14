@@ -221,6 +221,10 @@ struct TexThreadStats {
     //   moved on to a different device, everything held on behalf of the old
     //     one is released (which also allows that device to be destroyed).
     void                       useDevice           (IDirect3DDevice9* pDevice);
+
+    // Strips a texture of its checksum and replacement, and takes it out of
+    //   the cache; for when the game has written a different image to it.
+    void                       forgetTexture       (ISKTextureD3D9* pTexD3D9);
     IDirect3DDevice9*          pLastDevice         = nullptr; // Not a reference
     void                       purge               (void); // WIP
 
@@ -1327,6 +1331,12 @@ public:
   bool               in_native_lock     = false;// Inside the native texture's LockRect / UnlockRect,
                                                 //   which may call the (hooked) surface's methods
   IDirect3DSurface9* pSurfaceLvl0       = nullptr; // Surface for LOD 0, if the game has asked for it
+
+  // A texture the game keeps writing new images to (video, or an atlas that
+  //   is rebuilt constantly) has no fixed identity and is left alone.
+  bool               volatile_contents  = false;
+  int                rewrite_burst      = 0;        // Rewrites in quick succession
+  LARGE_INTEGER      last_rewrite       = { 0, 0 };
   D3DLOCKED_RECT     lock_lvl0  = {      };
   int                uses       =      0;
   LARGE_INTEGER      begin_map  = { 0, 0 };

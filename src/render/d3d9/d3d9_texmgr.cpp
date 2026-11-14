@@ -4053,6 +4053,52 @@ SK::D3D9::TextureManager::purge (void)
 LARGE_INTEGER liLastReset = { 0LL };
 
 void
+SK::D3D9::TextureManager::forgetTexture (ISKTextureD3D9* pTexD3D9)
+{
+  if (pTexD3D9 == nullptr)
+    return;
+
+  const uint32_t checksum =
+    pTexD3D9->tex_crc32c;
+
+  if (checksum != 0x00)
+  {
+    // The texture does not hold a reference to its replacement
+    if (pTexD3D9->pTexOverride != nullptr)
+    {
+      tex_log->Log ( L"[ Tex. Mgr ] The game wrote a different image to texture %08x;"
+                     L" it no longer uses that texture's replacement.", checksum );
+
+      pTexD3D9->pTexOverride  = nullptr;
+      pTexD3D9->override_size = 0;
+
+      if ( injected_refs.count (checksum) &&
+           injected_refs       [checksum] > 0 )
+           injected_refs       [checksum]--;
+    }
+
+    const auto cached =
+      textures.find (checksum);
+
+    if ( cached != textures.cend () && cached->second           != nullptr
+                                    && cached->second->d3d9_tex == pTexD3D9 )
+    {
+      InterlockedAdd64 (&basic_size, -(SSIZE_T)cached->second->size);
+
+      cached->second = nullptr;
+
+      // The cache's reference; the caller is the game, which has its own.
+      if (ReadAcquire (&pTexD3D9->refs) > 1)
+        pTexD3D9->Release ();
+    }
+  }
+
+  pTexD3D9->tex_crc32c   = 0x00;
+  pTexD3D9->pixel_crc32c = 0x00;
+  pTexD3D9->must_block   = false;
+}
+
+void
 SK::D3D9::TextureManager::useDevice (IDirect3DDevice9* pDevice)
 {
   if ((! init) || pDevice == nullptr || pDevice == pLastDevice)
@@ -4894,6 +4940,10 @@ SK::D3D9::TextureManager::refreshDataSources (void)
   injectable_textures.clear ();
   archives.clear            ();
 
+  // With nothing on the list, nothing gets replaced.
+  if (! config.textures.d3d9.inject)
+    return;
+
   //
   // Walk injectable textures so we don't have to query the filesystem on every
   //   texture load to check if a injectable one exists.
@@ -4940,10 +4990,6 @@ SK::D3D9::TextureManager::refreshDataSources (void)
             rec.archive = std::numeric_limits <unsigned int>::max ();
             rec.method  = Blocking;
             InterlockedExchange (
-  // With nothing on the list, nothing gets replaced.
-  if (! config.textures.d3d9.inject)
-    return;
-
            &rec.removed, FALSE  );
 
             injectable_textures [checksum] = rec;
@@ -5687,7 +5733,60 @@ ISKTextureD3D9::unlockLevel ( UINT                           Level,
 
   HRESULT hr = E_FAIL;
 
-  if (this->tex_crc32c == 0x00 && dirty && lock_lvl0_hashable && Level == 0 && config.textures.d3d9_mod)
+  //
+  // The game has written to a texture that already has a checksum; if that
+  //   checksum came from the image (rather than from a file that D3DX loaded
+  //     or from another texture), see whether it is still the same image.
+  //
+  //   Engines recycle textures, and a recycled texture must not go on being
+  //     drawn with the replacement for whatever it used to contain.
+  //
+  if ( this->tex_crc32c != 0x00 && this->tex_crc32c == this->pixel_crc32c &&
+       dirty && lock_lvl0_hashable && Level == 0 && config.textures.d3d9_mod )
+  {
+    SK::D3D9::TextureManager& tex_mgr =
+      SK_D3D9_GetTextureManager ();
+
+    D3DSURFACE_DESC         desc = { };
+    pTex->GetLevelDesc (0, &desc);
+
+    // An in-flight replacement is tied to the old checksum, leave things
+    //   alone until it has arrived; a later write will sort this out.
+    if ( SK_D3D9_ChecksumLevel0 (desc, lock_lvl0) != this->tex_crc32c &&
+         (! tex_mgr.injector.isInjectionThread ())                    &&
+         (! tex_mgr.injector.isStreaming (this->tex_crc32c)) )
+    {
+      const LARGE_INTEGER now =
+        SK_QueryPerf ();
+
+      const double ms_since_last =
+        1000.0 * (double)(now.QuadPart - last_rewrite.QuadPart) /
+                 (double)SK_PerfFreq;
+
+      // A stream of different images in quick succession is not a texture
+      //   being recycled; it is video, or something else that has no
+      //     business being checksummed (and cached) for every frame of it.
+      if (last_rewrite.QuadPart != 0 && ms_since_last < 250.0)
+      {
+        if (++rewrite_burst >= 8)
+        {
+          volatile_contents = true;
+
+          tex_log->Log ( L"[ Tex. Mgr ] Texture %08x is rewritten constantly;"
+                         L" it will no longer be checksummed.", this->tex_crc32c );
+        }
+      }
+
+      else
+        rewrite_burst = 0;
+
+      last_rewrite = now;
+
+      tex_mgr.forgetTexture (this);
+    }
+  }
+
+  if (this->tex_crc32c == 0x00 && (! volatile_contents) && dirty && lock_lvl0_hashable && Level == 0 && config.textures.d3d9_mod)
   {
     D3DSURFACE_DESC             desc = { };
     pTex->GetLevelDesc (Level, &desc);
@@ -5706,6 +5805,32 @@ ISKTextureD3D9::unlockLevel ( UINT                           Level,
 
     SK::D3D9::TextureManager& tex_mgr =
       SK_D3D9_GetTextureManager ();
+
+    // Uses the replacement that is already loaded for this checksum, if there
+    //   is one; a replacement only needs to be loaded once per device.
+    auto _AdoptExistingReplacement = [&](void) -> bool
+    {
+      if ( injected_textures.count (crc32c_) == 0 ||
+           injected_textures       [crc32c_] == nullptr )
+      {
+        return false;
+      }
+
+      // A replacement can only be drawn by the device it was created on,
+      //   and some games create a new device rather than reset theirs.
+      SK_ComPtr <IDirect3DDevice9>                   pReplacementDev;
+      injected_textures [crc32c_]->GetDevice       (&pReplacementDev.p);
+
+      if (pReplacementDev.p == nullptr || (! pReplacementDev.IsEqualObject (pDev)))
+        return false;
+
+      this->pTexOverride  = injected_textures [crc32c_];
+      this->override_size = injected_sizes    [crc32c_];
+
+      injected_refs [crc32c_]++;
+
+      return true;
+    };
 
     if (SUCCEEDED (hr) && crc32c_ != 0x0 && (! tex_mgr.injector.isInjectionThread ()) && (! tex_mgr.getTexture (crc32c_)))
     {
@@ -5755,7 +5880,9 @@ ISKTextureD3D9::unlockLevel ( UINT                           Level,
       {
         tex_mgr.missTexture ();
 
-        if ( tex_mgr.isTextureInjectable (crc32c_) )
+        // (A texture that the game recycled, and has now put the same
+        //    image back into, finds its replacement still loaded.)
+        if ( tex_mgr.isTextureInjectable (crc32c_) && (! _AdoptExistingReplacement ()) )
         {
           tex_log->LogEx ( true, L"[Inject Tex] Injectable texture for checksum (%08x)... ",
                              crc32c_ );
@@ -5920,22 +6047,7 @@ ISKTextureD3D9::unlockLevel ( UINT                           Level,
       {
         this->last_used.QuadPart = SK_QueryPerf ().QuadPart;
 
-        if ( injected_textures.count (crc32c_) &&
-             injected_textures       [crc32c_] != nullptr )
-        {
-          // A replacement can only be drawn by the device it was created on,
-          //   and some games create a new device rather than reset theirs.
-          SK_ComPtr <IDirect3DDevice9>                   pReplacementDev;
-          injected_textures [crc32c_]->GetDevice       (&pReplacementDev.p);
-
-          if (pReplacementDev.p != nullptr && pReplacementDev.IsEqualObject (pDev))
-          {
-            this->pTexOverride  = injected_textures [crc32c_];
-            this->override_size = injected_sizes    [crc32c_];
-
-            injected_refs [crc32c_]++;
-          }
-        }
+        _AdoptExistingReplacement ();
 
         ISKTextureD3D9* pStale =
           pExisting->d3d9_tex;
