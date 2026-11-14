@@ -216,6 +216,12 @@ struct TexThreadStats {
     }
 
     void                       reset               (void);
+
+    // Call with the device a texture is being created on. If the game has
+    //   moved on to a different device, everything held on behalf of the old
+    //     one is released (which also allows that device to be destroyed).
+    void                       useDevice           (IDirect3DDevice9* pDevice);
+    IDirect3DDevice9*          pLastDevice         = nullptr; // Not a reference
     void                       purge               (void); // WIP
 
     size_t                     numTextures         (void) const {

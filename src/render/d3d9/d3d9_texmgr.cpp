@@ -557,6 +557,18 @@ D3D9CreateTexture_Detour (IDirect3DDevice9    *This,
   if (config.textures.d3d9_mod)
     SK_D3D9_HookSetTextureVariant (This);
 
+  // Vendor libraries are not a sign of which device the game is using, and
+  //   neither is anything that the texture manager creates for itself.
+  //
+  //  Special K's own textures (the overlay) do not count either; it may go on
+  //    using a device for a moment after the game has replaced it.
+  if ( (! SK_D3D9_IsVendorLibrary (SK_GetCallingDLL ()))                &&
+                                   SK_GetCallingDLL () != SK_GetDLL ()  &&
+       (! SK_D3D9_GetTextureManager ().injector.isInjectionThread ()) )
+  {
+    SK_D3D9_GetTextureManager ().useDevice (This);
+  }
+
   SK_ComQIPtr <IDirect3DDevice9Ex>
        pDev9Ex (This);
   if ( pDev9Ex.p != nullptr &&
@@ -4041,6 +4053,98 @@ SK::D3D9::TextureManager::purge (void)
 LARGE_INTEGER liLastReset = { 0LL };
 
 void
+SK::D3D9::TextureManager::useDevice (IDirect3DDevice9* pDevice)
+{
+  if ((! init) || pDevice == nullptr || pDevice == pLastDevice)
+    return;
+
+  // The first device, there is nothing to clean up.
+  if (std::exchange (pLastDevice, pDevice) == nullptr)
+    return;
+
+  // Some games do not reset their device (i.e. on Alt+Tab), they destroy it
+  //   and create another. Nothing from the old device can be used with the new
+  //     one, and Direct3D keeps the old device alive for as long as any of
+  //       its resources are.
+  auto _BelongsTo = [](IDirect3DBaseTexture9* pTexture, IDirect3DDevice9* pDev) -> bool
+  {
+    SK_ComPtr <IDirect3DDevice9> pTexDev;
+
+    return
+      ( pTexture != nullptr && SUCCEEDED (pTexture->GetDevice (&pTexDev.p))
+                            &&            pTexDev.IsEqualObject (pDev) );
+  };
+
+  int     released_textures     = 0;
+  int     released_replacements = 0;
+  int64_t reclaimed             = 0;
+
+  for ( auto& it : textures )
+  {
+    Texture* pCached =
+      it.second;
+
+    if (pCached == nullptr || pCached->d3d9_tex == nullptr)
+      continue;
+
+    ISKTextureD3D9* pSKTex =
+      pCached->d3d9_tex;
+
+    // A texture whose native half is already gone has no device to ask
+    if (pSKTex->pTex != nullptr && _BelongsTo (pSKTex->pTex, pDevice))
+      continue;
+
+    // Any texture with this checksum that the new device creates
+    //   needs to be treated as if it had never been seen before.
+    it.second = nullptr;
+
+    IDirect3DTexture9* pReplacement =
+      injected_textures.count (it.first) ? injected_textures [it.first]
+                                         : nullptr;
+
+    if (pReplacement != nullptr && (! _BelongsTo (pReplacement, pDevice)))
+    {
+      // The texture does not hold a reference to its replacement
+      pSKTex->pTexOverride  = nullptr;
+      pSKTex->override_size = 0;
+
+      injected_textures [it.first] = nullptr;
+      injected_refs     [it.first] = 0;
+
+      InterlockedDecrement (&injected_count);
+      InterlockedAdd64     (&injected_size, -(SSIZE_T)injected_sizes [it.first]);
+
+      pReplacement->Release ();
+
+      ++released_replacements;
+    }
+
+    InterlockedAdd64 (&basic_size, -(SSIZE_T)pCached->size);
+    reclaimed +=                             pCached->size;
+
+    // Drop the cache's reference; if the game has let go of the texture
+    //   (it should have, to destroy the device), this is what frees it.
+    if (ReadAcquire (&pSKTex->refs) > 0)
+      pSKTex->Release ();
+
+    ++released_textures;
+  }
+
+  if ((int64_t)cacheSizeBasic () < 0)
+    InterlockedExchange64 (&basic_size, 0);
+
+  textures_used.clear       ();
+  textures_last_frame.clear ();
+
+  tex_log->Log ( L"[ Tex. Mgr ] The game is using a different device; released %d textures"
+                 L" (%.2f MiB) and %d replacements that belonged to the old one.",
+                   released_textures, (double)reclaimed / (1024.0 * 1024.0),
+                                      released_replacements );
+
+  updateOSD ();
+}
+
+void
 SK::D3D9::TextureManager::reset (void)
 {
   if (! init)
@@ -4140,6 +4244,17 @@ SK::D3D9::TextureManager::reset (void)
 
   tex_log->Log (L"[ Tex. Mgr ]   Releasing textures...");
 
+  // Replacements that survive the reset (managed pool, or a D3D9Ex device)
+  struct persisted_replacement_s {
+    uint32_t           checksum;
+    IDirect3DTexture9* pTexture;
+    size_t             size;
+    float              load_time;
+    int32_t            refs;
+  };
+
+  std::vector <persisted_replacement_s> persisted_replacements;
+
   for (auto& it : injected_textures)
   {
     if (it.second == nullptr)
@@ -4157,6 +4272,16 @@ SK::D3D9::TextureManager::reset (void)
     if (surfDesc.Pool == D3DPOOL_MANAGED || pDev9Ex.p != nullptr)
     {                                    // Also D3D9Ex devices
       persisted_injected += injected_sizes [it.first];
+
+      // Still loaded, and still what textures with this checksum should draw
+      //   with; it has to stay on record or a texture the game loads again
+      //     after the reset would have no way to find it.
+      persisted_replacements.push_back (
+        { it.first, it.second, injected_sizes      [it.first],
+                               injected_load_times [it.first],
+                               injected_refs       [it.first] }
+      );
+
       continue;
     }
 
@@ -4177,6 +4302,17 @@ SK::D3D9::TextureManager::reset (void)
 
   InterlockedExchange64 (&injected_size,  0);
   InterlockedExchange   (&injected_count, 0);
+
+  for ( const auto& replacement : persisted_replacements )
+  {
+    injected_textures   [replacement.checksum] = replacement.pTexture;
+    injected_sizes      [replacement.checksum] = replacement.size;
+    injected_load_times [replacement.checksum] = replacement.load_time;
+    injected_refs       [replacement.checksum] = replacement.refs;
+
+    InterlockedIncrement (&injected_count);
+    InterlockedAdd64     (&injected_size, replacement.size);
+  }
 
   for ( auto& it : textures )
   {
@@ -5763,6 +5899,57 @@ ISKTextureD3D9::unlockLevel ( UINT                           Level,
       }
 #endif
 #endif
+    }
+
+    // The checksum is already known, which means that this is either a second
+    //   copy of a texture, or the game has released a texture and is loading
+    //     it again (i.e. after resetting the device).
+    //
+    //   The replacement only gets loaded once, the first time a checksum is
+    //     seen, so this texture has to pick up the one that already exists.
+    else if (SUCCEEDED (hr) && crc32c_ != 0x0 && (! tex_mgr.injector.isInjectionThread ()))
+    {
+      SK::D3D9::Texture* pExisting =
+        tex_mgr.getTexture (crc32c_);
+
+      if (pExisting != nullptr && pExisting->d3d9_tex != this)
+      {
+        this->last_used.QuadPart = SK_QueryPerf ().QuadPart;
+
+        if ( injected_textures.count (crc32c_) &&
+             injected_textures       [crc32c_] != nullptr )
+        {
+          // A replacement can only be drawn by the device it was created on,
+          //   and some games create a new device rather than reset theirs.
+          SK_ComPtr <IDirect3DDevice9>                   pReplacementDev;
+          injected_textures [crc32c_]->GetDevice       (&pReplacementDev.p);
+
+          if (pReplacementDev.p != nullptr && pReplacementDev.IsEqualObject (pDev))
+          {
+            this->pTexOverride  = injected_textures [crc32c_];
+            this->override_size = injected_sizes    [crc32c_];
+
+            injected_refs [crc32c_]++;
+          }
+        }
+
+        ISKTextureD3D9* pStale =
+          pExisting->d3d9_tex;
+
+        // Nothing but the cache refers to the texture this checksum was first
+        //   seen on; the game let go of it. Track this one in its place, so
+        //     that the mod tools act on a texture that is actually drawn, and
+        //       so that the original can finally be freed.
+        if (pStale != nullptr && pStale->can_free && ReadAcquire (&pStale->refs) == 1)
+        {
+          this->AddRef ();
+
+          pExisting->d3d9_tex = this;
+          pExisting->size     = this->tex_size;
+
+          pStale->Release ();
+        }
+      }
     }
   }
   else
