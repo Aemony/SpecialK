@@ -2986,10 +2986,11 @@ D3D9GetTexture_Override ( IDirect3DDevice9      *This,
 //   Every implementation that turns up is therefore hooked, each with its own
 //   trampoline, and all of them are routed through the one override.
 //
-//  * Do NOT do this for SetRenderState or SetSamplerState. Those also differ
-//    on a multithreaded device, but there the multithreaded version takes the
-//    device's lock and then calls the regular one, which is already hooked;
-//    hooking both sends the override back into itself until the stack runs out.
+//  * This is not needed for SetRenderState or SetSamplerState. Those also
+//    differ on a multithreaded device, but there the multithreaded version
+//    takes the device's lock and then calls the regular one, which is already
+//    hooked. (The same is true of SetTexture in 32-bit d3d9.dll, but not in
+//    64-bit, see Original (...) below.)
 //
 __declspec (noinline) HRESULT STDMETHODCALLTYPE
 D3D9SetTexture_Override      (IDirect3DDevice9* This, DWORD Stage,   IDirect3DBaseTexture9* pTexture);
@@ -3015,11 +3016,24 @@ struct SK_D3D9_MethodVariants
   static inline thread_local pfn caller_original = nullptr;
 
   // What the override should call to reach Direct3D
+  //
+  //   This can only be asked once per call that came in through a thunk.
+  //
+  //   Whether one implementation is built on top of another depends on the
+  //   build of d3d9.dll: the 32-bit multithreaded SetTexture takes the device's
+  //   lock and then calls the regular SetTexture, the 64-bit one does not.
+  //   When it does, the override is entered a second time from inside of the
+  //   first, through the regular hook, and that inner call has to continue
+  //   into the regular implementation; handing it the outer call's trampoline
+  //   again would send it around in a circle until the stack ran out.
   static pfn Original (pfn first_original)
   {
+    const pfn original =
+      std::exchange (caller_original, nullptr);
+
     return
-      caller_original != nullptr ? caller_original
-                                 : first_original;
+      original != nullptr ? original
+                          : first_original;
   }
 
   template <int Variant, typename... Args>
