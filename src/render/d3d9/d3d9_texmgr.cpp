@@ -1647,7 +1647,7 @@ SK::D3D9::TextureManager::loadQueuedTextures (void)
     last_size = std::max (0LL, cacheSizeTotal ());
 
     if ( last_size >
-           (1024LL * 1024LL) * (int64_t)config.textures.cache.max_size )
+           (1024LL * 1024LL) * (int64_t)config.textures.d3d9.max_cache_size )
       __need_purge = true;
   }
 
@@ -1973,7 +1973,7 @@ D3DXCreateTextureFromFileInMemoryEx_Detour (
   else
     checksum = safe_crc32c (0, pSrcData, SrcDataSize);
 
-  if (config.textures.d3d11.cache && checksum != 0x00)
+  if (config.textures.d3d9.cache && checksum != 0x00)
   {
     Texture* pTex =
       tex_mgr.getTexture (checksum);
@@ -3402,7 +3402,7 @@ SK::D3D9::TextureManager::Init (void)
   SK_D3D11_SetResourceRoot (config.textures.d3d11.res_root.c_str ());
 
   // Create the directory to store dumped textures
-  if (config.textures.d3d11.dump)
+  if (config.textures.dump_on_load)
     CreateDirectoryW (SK_D3D11_res_root->c_str (), nullptr);
 
   tex_log->init (L"logs/textures.log", L"wt+,ccs=UTF-8");
@@ -3523,7 +3523,7 @@ SK::D3D9::TextureManager::Init (void)
     );
     pCommandProc->AddVariable (
       "Textures.MaxCacheSize",
-        SK_CreateVar (SK_IVariable::Int,     &config.textures.cache.max_size)
+        SK_CreateVar (SK_IVariable::Int,     &config.textures.d3d9.max_cache_size)
     );
   }
 }
@@ -3881,7 +3881,7 @@ SK::D3D9::TextureManager::purge (void)
   tex_log->Log ( L"[ Tex. Mgr ]  ***  Current Cache Size: %6.2f MiB "
                                           L"(User Limit: %6.2f MiB)",
                   (double)cacheSizeTotal () / (1024.0 * 1024.0),
-                    (double)config.textures.cache.max_size );
+                    (double)config.textures.d3d9.max_cache_size );
 
   tex_log->Log (L"[ Tex. Mgr ]   Releasing textures...");
 
@@ -3912,8 +3912,8 @@ SK::D3D9::TextureManager::purge (void)
 
   // We need to over-free, or we will likely be purging every other texture load
   int64_t target_size =
-    std::max (128, (int)(config.textures.cache.max_size - 0.15 *
-                         config.textures.cache.max_size)) * 1024LL * 1024LL;
+    std::max (128, (int)(config.textures.d3d9.max_cache_size - 0.15 *
+                         config.textures.d3d9.max_cache_size)) * 1024LL * 1024LL;
   int64_t start_size  =
     cacheSizeTotal ();
 
@@ -4940,6 +4940,10 @@ SK::D3D9::TextureManager::refreshDataSources (void)
             rec.archive = std::numeric_limits <unsigned int>::max ();
             rec.method  = Blocking;
             InterlockedExchange (
+  // With nothing on the list, nothing gets replaced.
+  if (! config.textures.d3d9.inject)
+    return;
+
            &rec.removed, FALSE  );
 
             injectable_textures [checksum] = rec;
