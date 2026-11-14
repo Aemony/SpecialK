@@ -514,6 +514,31 @@ D3D9SetTexture_Detour (
 
 IDirect3DSurface9* pOld     = nullptr;
 
+// Is this module part of a GPU vendor's API library (NVAPI, AGS)?
+//
+//   These create Direct3D resources of their own, using formats that only
+//   the driver understands (i.e. 'NVCS'), and reach into the objects.
+static bool
+SK_D3D9_IsVendorLibrary (HMODULE hModule)
+{
+  // CreateTexture is called a lot, and almost always from the same module
+  static thread_local HMODULE hModLast   = nullptr;
+  static thread_local bool    last_is_vendor = false;
+
+  if (hModule == hModLast)
+    return last_is_vendor;
+
+  const std::wstring name =
+    SK_GetModuleName (hModule);
+
+  hModLast       = hModule;
+  last_is_vendor =
+    ( StrStrIW (name.c_str (), L"nvapi")   != nullptr ||
+      StrStrIW (name.c_str (), L"amd_ags") != nullptr );
+
+  return last_is_vendor;
+}
+
 COM_DECLSPEC_NOTHROW
 HRESULT
 STDMETHODCALLTYPE
@@ -632,7 +657,12 @@ D3D9CreateTexture_Detour (IDirect3DDevice9    *This,
 
     // These hooks are also installed to make forcing D3D9Ex work, in which
     //   case the texture manager is not running and has no use for a wrapper.
-    else if (tex_mgr.init)
+    //
+    //  Textures that a GPU vendor's library creates for itself are not the
+    //    game's, and those libraries do not treat them as opaque; NVAPI writes
+    //      directly to fields inside of the Direct3D object, which would
+    //        corrupt a wrapper (the pointer to the real texture, specifically).
+    else if (tex_mgr.init && (! SK_D3D9_IsVendorLibrary (SK_GetCallingDLL ())))
     {
       ISKTextureD3D9* dontcare;
       if (FAILED ((*ppTexture)->QueryInterface (IID_SKTextureD3D9, (void **)&dontcare)))
