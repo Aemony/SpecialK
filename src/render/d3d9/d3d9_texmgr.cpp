@@ -527,6 +527,11 @@ D3D9CreateTexture_Detour (IDirect3DDevice9    *This,
                            IDirect3DTexture9 **ppTexture,
                            HANDLE             *pSharedHandle)
 {
+  // The texture is about to be wrapped, so this device's SetTexture
+  //   has to be one that knows how to unwrap it.
+  if (config.textures.d3d9_mod)
+    SK_D3D9_HookSetTextureVariant (This);
+
   SK_ComQIPtr <IDirect3DDevice9Ex>
        pDev9Ex (This);
   if ( pDev9Ex.p != nullptr &&

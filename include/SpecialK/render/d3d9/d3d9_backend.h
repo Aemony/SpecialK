@@ -60,6 +60,10 @@ std::string   SK_D3D9_FormatToStr                (D3DFORMAT Format, bool include
 std::string   SK_D3D9_PresentParameterFlagsToStr (DWORD dwFlags);
 std::string   SK_D3D9_SwapEffectToStr            (D3DSWAPEFFECT Effect);
 INT __stdcall SK_D3D9_BytesPerPixel              (D3DFORMAT Format);
+
+// Hooks IDirect3DDevice9::SetTexture for a (real, unwrapped) device if it
+//   uses an implementation that has not been hooked yet.
+void          SK_D3D9_HookSetTextureVariant      (IDirect3DDevice9* pDevice);
 std::string   SK_D3D9_UsageToStr                 (DWORD dwUsage);
 DXGI_FORMAT   SK_D3D9_FormatToDXGI               (D3DFORMAT format);
 
