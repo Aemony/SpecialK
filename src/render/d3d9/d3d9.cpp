@@ -7080,7 +7080,7 @@ INT
 __stdcall
 SK_D3D9_BytesPerPixel (D3DFORMAT Format)
 {
-  switch (Format)
+  switch (static_cast <UINT> (Format))
   {
     case D3DFMT_UNKNOWN:
       return 0;
@@ -7208,6 +7208,13 @@ SK_D3D9_BytesPerPixel (D3DFORMAT Format)
 
 #endif // !D3D_DISABLE_9EX
 /* -- D3D9Ex only */
+
+    // Sampleable depth FOURCCs (vendor extensions)
+    case (D3DFORMAT)MAKEFOURCC ('I','N','T','Z'): return 4; // D24S8
+    case (D3DFORMAT)MAKEFOURCC ('D','F','1','6'): return 2; // D16
+    case (D3DFORMAT)MAKEFOURCC ('D','F','2','4'): return 4; // D24, stored as 32-bit
+    case (D3DFORMAT)MAKEFOURCC ('R','A','W','Z'): return 4; // D24S8, raw bits
+    case (D3DFORMAT)MAKEFOURCC ('R','E','S','Z'): return 0; // resolve hack, not real storage
   }
 
   return 0;
@@ -7277,7 +7284,7 @@ SK_D3D9_PresentParameterFlagsToStr (DWORD dwFlags)
 std::string
 SK_D3D9_FormatToStr (D3DFORMAT Format, bool include_ordinal)
 {
-  switch (Format)
+  switch (static_cast <UINT> (Format))
   {
     case D3DFMT_UNKNOWN:
       return std::string ("Unknown") + (include_ordinal ? " (0)" :
@@ -7504,6 +7511,33 @@ SK_D3D9_FormatToStr (D3DFORMAT Format, bool include_ordinal)
 
 #endif // !D3D_DISABLE_9EX
 /* -- D3D9Ex only */
+
+    // Vendor extensions
+
+    // NVIDIA (GeForce 8+), also AMD/Intel: sampleable D24S8 depth for SSAO/DoF/shadows
+    case (D3DFORMAT)MAKEFOURCC ('I','N','T','Z'):
+      return std::string ("INTZ") +
+                (include_ordinal ? " (1515474505)" : "");
+
+    // AMD (Radeon 9500+), also Intel: sampleable 16-bit depth, mainly for shadow maps
+    case (D3DFORMAT)MAKEFOURCC ('D','F','1','6'):
+      return std::string ("DF16") +
+                (include_ordinal ? " (909198916)" : "");
+
+    // AMD (Radeon X1000+), also Intel: sampleable 24-bit depth for shadows/post-processing
+    case (D3DFORMAT)MAKEFOURCC ('D','F','2','4'):
+      return std::string ("DF24") +
+                (include_ordinal ? " (875710020)" : "");
+
+    // NVIDIA (GeForce 6/7 only): legacy sampleable depth, raw bits packed in RGB
+    case (D3DFORMAT)MAKEFOURCC ('R','A','W','Z'):
+      return std::string ("RAWZ") +
+                (include_ordinal ? " (1515667794)" : "");
+
+    // AMD (HD 4000+), some NVIDIA drivers: hack to resolve MSAA depth into INTZ
+    case (D3DFORMAT)MAKEFOURCC ('R','E','S','Z'):
+      return std::string ("RESZ") +
+                (include_ordinal ? " (1515406674)" : "");
   }
 
   return SK_FormatString ("UNKNOWN?! (%d)", Format);
