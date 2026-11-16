@@ -5162,6 +5162,44 @@ SK_DXGI_CreateSwapChain_PreInit (
   auto& rb =
     SK_GetCurrentRenderBackend ();
 
+  // Experimental D3D10: Flip Model cannot be multisampled, and SK emulates MSAA
+  //   for such games with a D3D11 resolve at Present. D3D10 devices silently
+  //     discard D3D11 commands, so the game would get a single-sampled backbuffer
+  //       and fail to create its MSAA render target view. Keep this SwapChain on
+  //         Blt Model instead (only for this call; the config is not changed).
+  struct flip_override_restore_s {
+    bool discard, sequential, active = false;
+   ~flip_override_restore_s (void) {
+      if (active) {
+        config.render.framerate.flip_discard    = discard;
+        config.render.framerate.flip_sequential = sequential;
+      }
+    }
+  } flip_restore { config.render.framerate.flip_discard,
+                   config.render.framerate.flip_sequential };
+
+  if (config.apis.d3d10.experimental && pDevice != nullptr &&
+      config.render.framerate.flip_discard  && config.render.dxgi.msaa_samples <= 0)
+  {
+    const UINT samples =
+      pDesc  != nullptr ? pDesc ->SampleDesc.Count :
+      pDesc1 != nullptr ? pDesc1->SampleDesc.Count : 1;
+
+    SK_ComPtr <ID3D10Device> pDev10;
+
+    if ( samples > 1 &&
+         SUCCEEDED (pDevice->QueryInterface (__uuidof (ID3D10Device), (void **)&pDev10.p)) )
+    {
+      SK_LOGi0 ( L" >> D3D10 SwapChain uses %ux MSAA; not applying Flip Model override.",
+                   samples );
+
+      flip_restore.active                     = true;
+      config.render.framerate.flip_discard    = false;
+      config.render.framerate.flip_sequential = false;
+      rb.active_traits.bFlipMode              = false;
+    }
+  }
+
   // Move the window to the origin of the user-forced monitor...
   //
   //   Old logic, disabled for reasons lost to time.
