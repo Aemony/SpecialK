@@ -8216,6 +8216,23 @@ D3D11CreateDeviceAndSwapChain_Detour (IDXGIAdapter          *pAdapter,
       return E_NOTIMPL;
     }
 
+    // Experimental: let the D3D10 runtime's internal D3D11 device go through
+    //   the normal D3D11 path instead of bailing out.
+    //
+    //   NOTE: Not reached on Windows 11 26300; there d3d10.dll does not call
+    //           this export, its SwapChain arrives via IDXGIFactory hooks.
+    else if (config.apis.d3d10.experimental)
+    {
+      SK_LOGi0 ( L"D3D10 runtime is creating a D3D11 device (Flags=0x%x, "
+                 L"FeatureLevel=0x%x, SwapChain=%s); handling it as D3D11...",
+                   Flags, pFeatureLevels [0],
+                     pSwapChainDesc != nullptr ? L"Yes" : L"No" );
+
+      // Flags (0x40000000) is the runtime's private "D3D10 device" flag,
+      //   it MUST be passed through or the device won't expose ID3D10Device.
+      bD3D10 = false;
+    }
+
     else if (! ( ReadAcquire (&SK_DXGI_LiveWrappedSwapChains)  > 0 ||
                  ReadAcquire (&SK_DXGI_LiveWrappedSwapChain1s) > 0 ) )
     {
