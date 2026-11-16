@@ -2198,54 +2198,6 @@ D3DXCreateTextureFromFileInMemoryEx_Detour (
       }
     }
 
-#if 0
-    //
-    // TODO:  Actually stream these, but block if the game tries to call SetTexture (...)
-    //          while the texture is in-flight.
-    //
-    else if (load_op != nullptr && load_op->type == tsf_tex_load_s::Immediate) {
-      QueryPerformanceFrequency        (&load_op->freq);
-      QueryPerformanceCounter_Original (&load_op->start);
-
-      EnterCriticalSection (&cs_tex_inject);
-      inject_tids.insert   (GetCurrentThreadId ());
-      LeaveCriticalSection (&cs_tex_inject);
-
-      load_op->pDest = *ppTexture;
-
-      hr = InjectTexture (load_op);
-
-      EnterCriticalSection (&cs_tex_inject);
-      inject_tids.erase    (GetCurrentThreadId ());
-      LeaveCriticalSection (&cs_tex_inject);
-
-      QueryPerformanceCounter_Original (&load_op->end);
-
-      if (SUCCEEDED (hr)) {
-        tex_log->Log ( L"[Inject Tex] Finished synchronous texture %08x (%5.2f MiB in %9.4f ms)",
-                        load_op->checksum,
-                          (double)load_op->SrcDataSize / (1024.0f * 1024.0f),
-                            1000.0f * (double)(load_op->end.QuadPart - load_op->start.QuadPart) /
-                                      (double) load_op->freq.QuadPart );
-        ISKTextureD3D9* pSKTex =
-          (ISKTextureD3D9 *)*ppTexture;
-
-        pSKTex->pTexOverride  = load_op->pSrc;
-        pSKTex->override_size = load_op->SrcDataSize;
-
-        pSKTex->last_used     = load_op->end;
-
-        tsf::RenderFix::tex_mgr.addInjected (load_op->SrcDataSize);
-      } else {
-        tex_log->Log ( L"[Inject Tex] *** FAILED synchronous texture %08x",
-                        load_op->checksum );
-      }
-
-      delete load_op;
-      load_op = nullptr;
-    }
-#endif
-
     else if (resample)
     {
       load_op              = new TexLoadRequest ();
@@ -5981,54 +5933,6 @@ ISKTextureD3D9::unlockLevel ( UINT                           Level,
           }
         }
       }
-
-#if 0
-      //
-      // TODO:  Actually stream these, but block if the game tries to call SetTexture (...)
-      //          while the texture is in-flight.
-      //
-      else if (load_op != nullptr && load_op->type == tsf_tex_load_s::Immediate) {
-        QueryPerformanceFrequency        (&load_op->freq);
-        QueryPerformanceCounter_Original (&load_op->start);
-
-        EnterCriticalSection (&cs_tex_inject);
-        inject_tids.insert   (GetCurrentThreadId ());
-        LeaveCriticalSection (&cs_tex_inject);
-
-        load_op->pDest = *ppTexture;
-
-        hr = InjectTexture (load_op);
-
-        EnterCriticalSection (&cs_tex_inject);
-        inject_tids.erase    (GetCurrentThreadId ());
-        LeaveCriticalSection (&cs_tex_inject);
-
-        QueryPerformanceCounter_Original (&load_op->end);
-
-        if (SUCCEEDED (hr)) {
-          tex_log->Log ( L"[Inject Tex] Finished synchronous texture %08x (%5.2f MiB in %9.4f ms)",
-                          load_op->checksum,
-                            (double)load_op->SrcDataSize / (1024.0f * 1024.0f),
-                              1000.0f * (double)(load_op->end.QuadPart - load_op->start.QuadPart) /
-                                        (double) load_op->freq.QuadPart );
-          ISKTextureD3D9* pSKTex =
-            (ISKTextureD3D9 *)*ppTexture;
-
-          pSKTex->pTexOverride  = load_op->pSrc;
-          pSKTex->override_size = load_op->SrcDataSize;
-
-          pSKTex->last_used     = load_op->end;
-
-          tsf::RenderFix::tex_mgr.addInjected (load_op->SrcDataSize);
-        } else {
-          tex_log->Log ( L"[Inject Tex] *** FAILED synchronous texture %08x",
-                          load_op->checksum );
-        }
-
-        delete load_op;
-        load_op = nullptr;
-      }
-#endif
 #endif
     }
 
