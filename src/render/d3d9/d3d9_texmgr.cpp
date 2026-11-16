@@ -360,6 +360,70 @@ D3D9SetDepthStencilSurface_Detour (
 uint32_t debug_tex_id      =   0UL;
 uint32_t current_tex [256] = { 0ui32 };
 
+//
+// Replacements in inject\textures\blocking\ are loaded by the streaming workers
+//   like any other; what makes them blocking is that the texture is not drawn
+//     until its replacement has arrived. This waits for that, when the game
+//       sets a texture whose replacement is still queued or being loaded.
+//
+//   The worker creates the replacement on the game's device, which takes the
+//   device's lock on a multithreaded device. This must therefore only be called
+//   before Direct3D has taken that lock: from D3D9SetTexture_Detour, which runs
+//   ahead of every implementation of SetTexture. (When the 32-bit multithreaded
+//   SetTexture calls the regular one, the inner call is handed the texture that
+//   is drawn, not the wrapper, and so never comes here.)
+//
+//   A load that takes too long (or that will never finish) stops the texture
+//   from being treated as blocking, rather than stalling every frame it is used.
+//
+static void
+SK_D3D9_WaitForBlockingLoad (ISKTextureD3D9* pSKTex)
+{
+  constexpr DWORD MAX_WAIT_MS = 1000UL;
+
+  auto& tex_mgr =
+    SK_D3D9_GetTextureManager ();
+
+  const uint32_t checksum    = pSKTex->tex_crc32c;
+  const DWORD    dwWaitStart = SK_timeGetTime ();
+
+  while (pSKTex->pTexOverride == nullptr)
+  {
+    // Take finished loads as they come; ours may be among them
+    if (tex_mgr.injector.hasPendingLoads ())
+    {
+      tex_mgr.loadQueuedTextures ();
+
+      if (pSKTex->pTexOverride != nullptr)
+        break;
+    }
+
+    tex_mgr.injector.lockStreaming ();
+
+    const bool in_flight =
+      tex_mgr.injector.isStreaming (checksum);
+
+    tex_mgr.injector.unlockStreaming ();
+
+    // Nothing is on its way (the load failed, or the game wrote a new image to
+    //   the texture), so there is nothing to wait for
+    if (! in_flight)
+      break;
+
+    if (SK_timeGetTime () - dwWaitStart > MAX_WAIT_MS)
+    {
+      tex_log->Log ( L"[Inject Tex] Blocking texture %08x was not loaded within %lu ms;"
+                     L" it will be drawn without waiting for it from now on.",
+                       checksum, MAX_WAIT_MS );
+
+      pSKTex->must_block = false;
+      break;
+    }
+
+    SK_SleepEx (1UL, FALSE);
+  }
+}
+
 
 COM_DECLSPEC_NOTHROW
 HRESULT
@@ -440,23 +504,10 @@ D3D9SetTexture_Detour (
 
     pSKTex->use ();
 
-    //
-    // This is how blocking is implemented -- only do it when a texture that needs
-    //                                          this feature is being applied.
-    //
-    while ( __remap_textures && pSKTex->must_block &&
-                                pSKTex->pTexOverride == nullptr )
+    if ( __remap_textures && pSKTex->must_block &&
+                             pSKTex->pTexOverride == nullptr )
     {
-      if (tex_mgr.injector.hasPendingLoads ())
-      {         tex_mgr.loadQueuedTextures ();
-      }
-
-      else
-      {
-        SwitchToThread ();
-        //YieldProcessor ();
-        break;
-      }
+      SK_D3D9_WaitForBlockingLoad (pSKTex);
     }
 
     // XXX: Why are we assigning this a second time?
