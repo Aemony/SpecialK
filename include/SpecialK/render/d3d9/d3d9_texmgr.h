@@ -546,6 +546,10 @@ public:
       events_.shutdown =
         SK_CreateEvent (nullptr, FALSE, FALSE, nullptr);
 
+      // Auto-reset: set by a worker each time it finishes a job (TextureWorkerThread::finishJob)
+      events_.worker_idle =
+        SK_CreateEvent (nullptr, FALSE, FALSE, nullptr);
+
       constexpr int MAX_THREADS = 5;///*config.textures.worker_threads*/ 4 / 2;
 
       if (! init_worker_sync_)
@@ -579,6 +583,7 @@ public:
       SK_CloseHandle (events_.results_waiting);
       SK_CloseHandle (events_.jobs_added);
       SK_CloseHandle (events_.shutdown);
+      SK_CloseHandle (events_.worker_idle);
     }
 
     void postJob (TexLoadRequest* job);
@@ -645,34 +650,28 @@ public:
   protected:
     static DWORD __stdcall Spooler (LPVOID user);
 
+    // The next job queued, or nullptr if there is none (it does not wait for one: the spooler waits on jobs_added).
+    //
+    //   jobs_added is a manual-reset event that postJob sets for every job. It may only be reset once the queue is
+    //     empty, and the queue must be checked again after resetting it: a job posted between a failed pop and the
+    //       reset would otherwise have its signal erased, and sit in the queue until another job is posted. Textures
+    //         created back to back (as games do at launch) then left one stuck in flight, and a device reset waiting
+    //           for it (TextureManager::reset) never finished.
     TexLoadRequest* getNextJob   (void)
     {
-      TexLoadRequest* job       = nullptr;
-      DWORD           dwResults = 0;
-
-      dwResults =
-        SK_WaitForSingleObject (events_.jobs_added, 0UL);
-
-      while (dwResults != WAIT_OBJECT_0)
-      {
-        dwResults =
-          SK_WaitForSingleObject (events_.jobs_added, 0);
-      }
-      
-      if (0 == ReadAcquire (&jobs_waiting_))
-        return nullptr;
-
       SK::D3D9::TexLoadRef ref (nullptr);
 
-      while (! jobs_.empty ())
-      {    if (jobs_.try_pop (ref)) break; }
+      if (! jobs_.try_pop (ref))
+      {
+        ResetEvent (events_.jobs_added);
 
-      job = ref;
+        if (! jobs_.try_pop (ref))
+          return nullptr;
+      }
 
       InterlockedDecrement (&jobs_waiting_);
-      ResetEvent       (events_.jobs_added);
 
-      return job;
+      return ref;
     }
 
     friend class SK::D3D9::TextureManager;
@@ -716,6 +715,7 @@ public:
       HANDLE jobs_added;
       HANDLE results_waiting;
       HANDLE shutdown;
+      HANDLE worker_idle;
     } events_;
 
     //SK_Thread_HybridSpinlock cs_jobs_    =

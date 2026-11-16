@@ -4188,6 +4188,13 @@ SK::D3D9::TextureManager::reset (void)
 
   int iters = 0;
 
+  // Wait for the loads in flight to finish, taking their results as they come. Only then: while a load is queued or
+  //   being loaded, there is nothing to take, and loadQueuedTextures would purge the cache each time it is called
+  //     (__need_purge is forced on here) without anything to free. A load that never finishes must not hang the
+  //       game's device reset either: past the timeout, the reset goes ahead without it.
+  constexpr DWORD MAX_WAIT_MS = 10000UL;
+  const     DWORD dwWaitStart = SK_timeGetTime ();
+
   while (true)
   {
     getTexture (0);
@@ -4196,13 +4203,13 @@ SK::D3D9::TextureManager::reset (void)
     {
       if (injector.hasPendingLoads ())
         return true;
-      
+
       for ( auto& it : injector.textures_in_flight )
       {
         if (it.second != nullptr)
           return true;
       }
-      
+
       return false;
     };
 
@@ -4212,8 +4219,33 @@ SK::D3D9::TextureManager::reset (void)
       break;
     }
 
-    __need_purge = true;
-    loadQueuedTextures ( );
+    if (injector.hasPendingLoads ())
+    {
+      __need_purge = true;
+      loadQueuedTextures ( );
+    }
+
+    else if (SK_timeGetTime () - dwWaitStart > MAX_WAIT_MS)
+    {
+      int in_flight = 0;
+
+      for ( auto& it : injector.textures_in_flight )
+      {
+        if (it.second != nullptr)
+          ++in_flight;
+      }
+
+      tex_log->Log ( L"[ Tex. Mgr ] Device reset: %i texture load(s) still in flight after %lu ms,"
+                     L" no longer waiting for them!", in_flight, MAX_WAIT_MS );
+
+      __need_purge = false;
+      break;
+    }
+
+    else
+    {
+      SK_SleepEx (1UL, FALSE);
+    }
 
     ++iters;
   }
@@ -4818,10 +4850,12 @@ SK::D3D9::TextureThreadPool::Spooler (LPVOID user)
         }
       }
 
-      // All worker threads are busy, so wait...
+      // All worker threads are busy, so wait for one to finish its job. Not results_waiting: a job that fails posts
+      //   no result, so that may never be set (and, manual-reset, it stays set until the results are taken, which
+      //     would have this spin). The timeout is a safeguard only.
       if (! started)
       {
-        SK_WaitForSingleObject (pPool->events_.results_waiting, INFINITE);
+        SK_WaitForSingleObject (pPool->events_.worker_idle, 100UL);
       }
 
       else
@@ -4859,6 +4893,9 @@ SK::D3D9::TextureWorkerThread::finishJob (void)
                              ->SrcDataSize);
   InterlockedIncrement       (&jobs_retired_);
   InterlockedExchangePointer ((PVOID *)&job_, nullptr);
+
+  // Free for another job (the spooler waits for this when every worker is busy)
+  SetEvent (pool_->events_.worker_idle);
 }
 
 
@@ -5339,8 +5376,9 @@ SK::D3D9::TextureThreadPool::postJob (TexLoadRequest* job)
   // Don't let the game free this while we are working on it...
   job->pDest->AddRef ();
 
-  jobs_.push           (job);
+  // (Counted before it is queued: the spooler may take it, and count it off, as soon as it is)
   InterlockedIncrement (&jobs_waiting_);
+  jobs_.push           (job);
 
   SetEvent             (events_.jobs_added);
 }
