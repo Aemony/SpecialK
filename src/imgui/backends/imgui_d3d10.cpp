@@ -18,6 +18,7 @@
 #include <SpecialK/stdafx.h>
 
 #include <d3d10.h>
+#include <SpecialK/render/dxgi/dxgi_util.h>
 
 #include <imgui/imgui.h>
 #include <imgui/backends/imgui_d3d10.h>
@@ -271,6 +272,15 @@ ImGui_ImplDX10_InvalidateDeviceObjects (void)
   _ctx = SK_ImGui_D3D10_Ctx { };
 }
 
+// Every early exit below would otherwise leave the overlay invisible with
+//   nothing in the log; report each kind of failure once.
+#define SK_D3D10_LOG_ONCE(failure, ...)                         \
+  do {                                                          \
+    static volatile LONG _logged_##failure = FALSE;             \
+    if (! InterlockedExchange (&_logged_##failure, TRUE))       \
+      SK_LOGi0 (__VA_ARGS__);                                   \
+  } while (0)
+
 bool
 SK_D3D10_IsD3D10SwapChain (IDXGISwapChain* pSwapChain)
 {
@@ -279,8 +289,20 @@ SK_D3D10_IsD3D10SwapChain (IDXGISwapChain* pSwapChain)
 
   SK_ComPtr <ID3D10Device> pDev10;
 
-  return
-    SUCCEEDED (pSwapChain->GetDevice (__uuidof (ID3D10Device), (void **)&pDev10.p));
+  const HRESULT hr =
+    pSwapChain->GetDevice (__uuidof (ID3D10Device), (void **)&pDev10.p);
+
+  if (FAILED (hr))
+  {
+    // Expected for real D3D11 games; for a D3D10 game it means the overlay is
+    //   drawn through the D3D11 renderer, whose commands D3D10 discards.
+    SK_D3D10_LOG_ONCE ( NoD3D10Device,
+      L"SwapChain %p has no ID3D10Device (hr=%x); using the D3D11 overlay renderer. "
+      L"If this is a D3D10 game, the overlay will not be visible.", pSwapChain, hr );
+    return false;
+  }
+
+  return true;
 }
 
 bool
@@ -291,8 +313,11 @@ ImGui_ImplDX10_RenderDrawData (ImDrawData* draw_data, IDXGISwapChain* pSwapChain
 
   SK_ComPtr <ID3D10Device> pDevice;
 
-  if (FAILED (pSwapChain->GetDevice (__uuidof (ID3D10Device), (void **)&pDevice.p)))
+  if (const HRESULT hr = pSwapChain->GetDevice (__uuidof (ID3D10Device), (void **)&pDevice.p); FAILED (hr))
+  {
+    SK_D3D10_LOG_ONCE (GetDevice, L"Overlay not drawn: IDXGISwapChain::GetDevice (ID3D10Device) failed (hr=%x)", hr);
     return false;
+  }
 
   if (_ctx.pDevice.p != pDevice.p)
   {
@@ -338,17 +363,25 @@ ImGui_ImplDX10_RenderDrawData (ImDrawData* draw_data, IDXGISwapChain* pSwapChain
     return true;
 
   if (! SK_D3D10_EnsureBuffers (pDevice, draw_data))
+  {
+    SK_D3D10_LOG_ONCE (EnsureBuffers, L"Overlay not drawn: could not create vertex/index buffers (%d vertices, %d indices)",
+                                        draw_data->TotalVtxCount, draw_data->TotalIdxCount);
     return false;
+  }
 
   // Upload vertex / index data
   ImDrawVert* vtx_dst = nullptr;
   ImDrawIdx*  idx_dst = nullptr;
 
-  if (FAILED (_ctx.pVB->Map (D3D10_MAP_WRITE_DISCARD, 0, (void **)&vtx_dst)))
-    return false;
-
-  if (FAILED (_ctx.pIB->Map (D3D10_MAP_WRITE_DISCARD, 0, (void **)&idx_dst)))
+  if (const HRESULT hr = _ctx.pVB->Map (D3D10_MAP_WRITE_DISCARD, 0, (void **)&vtx_dst); FAILED (hr))
   {
+    SK_D3D10_LOG_ONCE (MapVB, L"Overlay not drawn: vertex buffer Map failed (hr=%x)", hr);
+    return false;
+  }
+
+  if (const HRESULT hr = _ctx.pIB->Map (D3D10_MAP_WRITE_DISCARD, 0, (void **)&idx_dst); FAILED (hr))
+  {
+    SK_D3D10_LOG_ONCE (MapIB, L"Overlay not drawn: index buffer Map failed (hr=%x)", hr);
     _ctx.pVB->Unmap ();
     return false;
   }
@@ -371,8 +404,11 @@ ImGui_ImplDX10_RenderDrawData (ImDrawData* draw_data, IDXGISwapChain* pSwapChain
   {
     float* mvp = nullptr;
 
-    if (FAILED (_ctx.pVSConstants->Map (D3D10_MAP_WRITE_DISCARD, 0, (void **)&mvp)))
+    if (const HRESULT hr = _ctx.pVSConstants->Map (D3D10_MAP_WRITE_DISCARD, 0, (void **)&mvp); FAILED (hr))
+    {
+      SK_D3D10_LOG_ONCE (MapCB, L"Overlay not drawn: constant buffer Map failed (hr=%x)", hr);
       return false;
+    }
 
     const float L = draw_data->DisplayPos.x;
     const float R = draw_data->DisplayPos.x + draw_data->DisplaySize.x;
@@ -396,20 +432,57 @@ ImGui_ImplDX10_RenderDrawData (ImDrawData* draw_data, IDXGISwapChain* pSwapChain
   SK_ComPtr <ID3D10Texture2D>        pBackBuffer;
   SK_ComPtr <ID3D10RenderTargetView> pRTV;
 
-  if (FAILED (pSwapChain->GetBuffer (0, __uuidof (ID3D10Texture2D), (void **)&pBackBuffer.p)))
+  if (const HRESULT hr = pSwapChain->GetBuffer (0, __uuidof (ID3D10Texture2D), (void **)&pBackBuffer.p); FAILED (hr))
+  {
+    SK_D3D10_LOG_ONCE (GetBuffer, L"Overlay not drawn: IDXGISwapChain::GetBuffer (0, ID3D10Texture2D) failed (hr=%x)", hr);
     return false;
+  }
 
   D3D10_TEXTURE2D_DESC bb_desc = { };
   pBackBuffer->GetDesc (&bb_desc);
 
-  if (FAILED (pDevice->CreateRenderTargetView (pBackBuffer, nullptr, &pRTV.p)))
-    return false;
+  // Describe what we are drawing into once; the swapchain's window should be the game's.
+  SK_RunOnce (
+    SK_LOGi0 ( L"Drawing overlay into SwapChain %p (HWND=%p, game HWND=%p): %ux%u %hs, %u sample(s)",
+                 pSwapChain, swap_desc.OutputWindow, game_window.hWnd, bb_desc.Width, bb_desc.Height,
+                 SK_DXGI_FormatToStr (bb_desc.Format).data (), bb_desc.SampleDesc.Count )
+  );
 
-  // Save the game's pipeline state
+  // SK's swapchain wrapper may hand out a typeless (fake) backbuffer, e.g. while
+  //   overriding the swap effect or for HDR; a view without a format fails on it.
+  D3D10_RENDER_TARGET_VIEW_DESC
+    rtv_desc               = { };
+    rtv_desc.Format        = DirectX::IsTypeless (bb_desc.Format) ?
+                             DirectX::MakeTypelessUNORM (
+                             DirectX::MakeTypelessFLOAT (bb_desc.Format)) : bb_desc.Format;
+    rtv_desc.ViewDimension = bb_desc.SampleDesc.Count > 1 ? D3D10_RTV_DIMENSION_TEXTURE2DMS
+                                                          : D3D10_RTV_DIMENSION_TEXTURE2D;
+
+  if (const HRESULT hr = pDevice->CreateRenderTargetView (pBackBuffer, &rtv_desc, &pRTV.p); FAILED (hr))
+  {
+    SK_D3D10_LOG_ONCE ( CreateRTV, L"Overlay not drawn: CreateRenderTargetView failed (hr=%x, backbuffer %hs, view %hs)", hr,
+                          SK_DXGI_FormatToStr (bb_desc.Format).data (), SK_DXGI_FormatToStr (rtv_desc.Format).data () );
+    return false;
+  }
+
+  // Save the game's pipeline state (D3D10.1-only games may not have d3d10.dll loaded)
+  static auto _GetD3D10Proc = [](const char* szFunc) -> FARPROC
+  {
+    FARPROC proc =
+      SK_GetProcAddress (L"d3d10.dll",   szFunc);
+    return proc != nullptr ? proc :
+      SK_GetProcAddress (L"d3d10_1.dll", szFunc);
+  };
+
   static auto _D3D10StateBlockMaskEnableAll =
-    (D3D10StateBlockMaskEnableAll_pfn)SK_GetProcAddress (L"d3d10.dll", "D3D10StateBlockMaskEnableAll");
+    (D3D10StateBlockMaskEnableAll_pfn)_GetD3D10Proc ("D3D10StateBlockMaskEnableAll");
   static auto _D3D10CreateStateBlock =
-    (D3D10CreateStateBlock_pfn)       SK_GetProcAddress (L"d3d10.dll", "D3D10CreateStateBlock");
+    (D3D10CreateStateBlock_pfn)       _GetD3D10Proc ("D3D10CreateStateBlock");
+
+  if (_D3D10StateBlockMaskEnableAll == nullptr || _D3D10CreateStateBlock == nullptr)
+  {
+    SK_D3D10_LOG_ONCE (NoStateBlock, L"D3D10 state block functions not found; the game's pipeline state will be cleared after drawing the overlay.");
+  }
 
   SK_ComPtr <ID3D10StateBlock> pStateBlock;
 
