@@ -313,14 +313,20 @@ ImGui_ImplDX10_RenderDrawData (ImDrawData* draw_data, IDXGISwapChain* pSwapChain
   if (_ctx.failed)
     return false;
 
-  // The D3D11 backend normally sets this during its draw (for the next frame),
-  //   which is skipped for D3D10; without it ImGui lays out for a 128x128 screen.
+  // The D3D11 backend normally sets these during its draw (for the next frame),
+  //   which is skipped for D3D10. Without DisplaySize, ImGui lays out for a
+  //     128x128 screen; SK also stores the backbuffer size in
+  //       DisplayFramebufferScale, which the cursor code uses to map the mouse
+  //         into ImGui space (left at 1x1, every click lands near 0,0).
   DXGI_SWAP_CHAIN_DESC swap_desc = { };
   if (SUCCEEDED (pSwapChain->GetDesc (&swap_desc)))
   {
-    ImGui::GetIO ().DisplaySize =
-      ImVec2 ( static_cast <float> (swap_desc.BufferDesc.Width),
-               static_cast <float> (swap_desc.BufferDesc.Height) );
+    const ImVec2 backbuffer_size (
+      static_cast <float> (swap_desc.BufferDesc.Width),
+      static_cast <float> (swap_desc.BufferDesc.Height) );
+
+    ImGui::GetIO ().DisplaySize             = backbuffer_size;
+    ImGui::GetIO ().DisplayFramebufferScale = backbuffer_size;
   }
 
   // The font atlas was rebuilt (e.g. font scale changed)
