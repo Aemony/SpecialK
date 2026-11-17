@@ -573,3 +573,49 @@ ImGui_ImplDX10_RenderDrawData (ImDrawData* draw_data, IDXGISwapChain* pSwapChain
 
   return true;
 }
+
+SK_D3D10_FlipModelRebind::SK_D3D10_FlipModelRebind (IDXGISwapChain* pSwapChain)
+{
+  if (! SK_D3D10_IsD3D10SwapChain (pSwapChain))
+    return;
+
+  DXGI_SWAP_CHAIN_DESC desc = { };
+
+  if ( FAILED (pSwapChain->GetDesc (&desc)) ||
+       desc.SwapEffect < DXGI_SWAP_EFFECT_FLIP_SEQUENTIAL ||
+       SK_GetCurrentRenderBackend ().active_traits.bOriginallyFlip )
+    return; // Not Flip Model, or the game asked for Flip Model itself
+
+  if (FAILED (pSwapChain->GetDevice (__uuidof (ID3D10Device), (void **)&pDevice)))
+  {
+    pDevice = nullptr;
+    return;
+  }
+
+  pDevice->OMGetRenderTargets (D3D10_SIMULTANEOUS_RENDER_TARGET_COUNT, rtvs, &pDSV);
+}
+
+void
+SK_D3D10_FlipModelRebind::restore (void)
+{
+  if (pDevice == nullptr)
+    return;
+
+  bool any_bound = (pDSV != nullptr);
+  for (auto* rtv : rtvs) any_bound |= (rtv != nullptr);
+
+  if (any_bound)
+  {
+    pDevice->OMSetRenderTargets (D3D10_SIMULTANEOUS_RENDER_TARGET_COUNT, rtvs, pDSV);
+  }
+
+  for (auto*& rtv : rtvs) if (rtv != nullptr) { rtv->Release (); rtv = nullptr; }
+  if (pDSV != nullptr) { pDSV->Release (); pDSV = nullptr; }
+
+  std::exchange (pDevice, nullptr)->Release ();
+}
+
+SK_D3D10_FlipModelRebind::~SK_D3D10_FlipModelRebind (void)
+{
+  restore ();
+}

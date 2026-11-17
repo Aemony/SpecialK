@@ -40,6 +40,7 @@
 
 #include <imgui/backends/imgui_d3d11.h>
 #include <imgui/backends/imgui_d3d12.h>
+#include <imgui/backends/imgui_d3d10.h>
 
 #include <imgui/font_awesome.h>
 
@@ -3550,6 +3551,10 @@ SK_DXGI_PresentBase ( IDXGISwapChain         *This,
       SK::Framerate::TickEx (false, 0.0, { 0,0 }, rb.swapchain.p);
     }
 
+    // D3D10 games expect their render targets to stay bound across Present
+    SK_D3D10_FlipModelRebind
+      d3d10_rebind (This);
+
     HRESULT hr =
       _SkipThisFrame ? _Present ( rb.d3d11.immediate_ctx != nullptr ?
                                                                   0 : 1,
@@ -3557,6 +3562,8 @@ SK_DXGI_PresentBase ( IDXGISwapChain         *This,
                                 ( ( rb.d3d11.immediate_ctx != nullptr) ? DXGI_PRESENT_ALLOW_TEARING
                                                                        : 0 ) ) :
                        _Present ( interval, flags );
+
+    d3d10_rebind.restore ();
 
     if (_SkipThisFrame)
       hr = S_OK;
