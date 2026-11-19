@@ -24,6 +24,7 @@ mapfile -t branches < <(sed -e 's/\r$//' -e 's/#.*//' -e 's/[[:space:]]*$//' "$h
 git_dir=$(git -C "$here" rev-parse --path-format=absolute --git-common-dir)
 
 summary () { [ -n "${GITHUB_STEP_SUMMARY:-}" ] && echo "$*" >> "$GITHUB_STEP_SUMMARY" || true; }
+output  () { [ -n "${GITHUB_OUTPUT:-}"       ] && echo "$1=$2" >> "$GITHUB_OUTPUT"  || true; }
 
 # --- Fetch inputs --------------------------------------------------------------
 echo "Fetching $UPSTREAM_URL $UPSTREAM_BRANCH"
@@ -102,12 +103,14 @@ new=$(git rev-parse HEAD)
 if [ -n "$old" ] && [ "$(git rev-parse "$old^{tree}")" = "$(git rev-parse "$new^{tree}")" ]; then
   echo "$TARGET already has this exact content; nothing to push."
   summary ""; summary "No change in content; \`$TARGET\` left as is."
+  output sha "$old"; output pushed false
   exit 0
 fi
 
 if [ "$PUSH" = 1 ]; then
   git push --force-with-lease="refs/heads/$TARGET:$old" origin "$new:refs/heads/$TARGET"
   summary ""; summary "Pushed \`$TARGET\` at \`$(git rev-parse --short "$new")\`."
+  output sha "$new"; output pushed true
 else
   echo "Built $new (not pushed; set PUSH=1 to push it)"
 fi

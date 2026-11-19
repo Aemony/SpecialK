@@ -24,6 +24,9 @@ env:
 jobs:
   rebuild:
     runs-on: ubuntu-latest
+    outputs:
+      sha:    ${{ steps.rebuild.outputs.sha }}
+      pushed: ${{ steps.rebuild.outputs.pushed }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -70,3 +73,81 @@ jobs:
         with:
           path: ${{ runner.temp }}/inputs.txt
           key: ${{ steps.fp.outputs.key }}
+
+  # Pushes made with GITHUB_TOKEN never trigger other workflows, so the fork's
+  # own "Builds" workflow does not run for combined. These jobs mirror it.
+  # Runs when combined was pushed, or on a forced manual run.
+  build:
+    name: Build (${{ matrix.platform }})
+    needs: rebuild
+    if: needs.rebuild.outputs.pushed == 'true' || (inputs.force && needs.rebuild.outputs.sha != '')
+    runs-on: windows-2022
+    strategy:
+      fail-fast: false
+      matrix:
+        platform: [x64, Win32]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.rebuild.outputs.sha }}
+
+      - uses: SpecialKO/GA-setup-cpp-n20@master
+      - uses: microsoft/setup-msbuild@v2
+
+      - name: Build combined (${{ matrix.platform }})
+        run: msbuild SpecialK.sln -p:Configuration="Release" -p:Platform="${{ matrix.platform }}" -m
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: build-${{ matrix.platform }}
+          path: ~\Documents\My Mods\SpecialK\*.dll
+          if-no-files-found: error
+          retention-days: 1
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: symbols-${{ matrix.platform }}
+          path: ~\Documents\My Mods\SpecialK\*.pdb
+          if-no-files-found: warn
+          retention-days: 1
+
+  merge:
+    name: Merge artifacts
+    needs: [rebuild, build]
+    runs-on: windows-2022
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: build-*
+          path: Builds
+          merge-multiple: true
+
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: symbols-*
+          path: Symbols
+          merge-multiple: true
+
+      - name: Name the artifact
+        id: prep
+        run: |
+          $Dll = Get-Item ".\Builds\SpecialK64.dll", ".\Builds\SpecialK*.dll" -ErrorAction SilentlyContinue | Select-Object -First 1
+          $Version = if ($Dll) { $Dll.VersionInfo.ProductVersion } else { $null }
+          If ([string]::IsNullOrWhiteSpace($Version)) { $Version = "unknown" }
+          "SK_VERSION=$($Version.Trim())" | Out-File -FilePath $env:GITHUB_ENV -Encoding UTF8 -Append
+          "SHORT_SHA=$("${{ needs.rebuild.outputs.sha }}".SubString(0, 8))" | Out-File -FilePath $env:GITHUB_ENV -Encoding UTF8 -Append
+          $HasSymbols = [bool](Get-ChildItem ".\Symbols\*.pdb" -ErrorAction SilentlyContinue)
+          "has_symbols=$($HasSymbols.ToString().ToLower())" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding UTF8 -Append
+
+      - uses: actions/upload-artifact/merge@v4
+        with:
+          name: SpecialK_combined_${{ env.SK_VERSION }}_${{ env.SHORT_SHA }}
+          pattern: build-*
+          delete-merged: true
+
+      - uses: actions/upload-artifact/merge@v4
+        if: steps.prep.outputs.has_symbols == 'true'
+        with:
+          name: SpecialK_combined_${{ env.SK_VERSION }}_${{ env.SHORT_SHA }}_debug_symbols
+          pattern: symbols-*
+          delete-merged: true

@@ -20,6 +20,12 @@ commit to it. Fix things on the source branch they belong to.
 You do not need to sync `main` for `combined` to pick up upstream changes,
 because the Action fetches upstream directly.
 
+Every time `combined` is pushed, or on a forced run, the same workflow then
+compiles it (Release, x64 and Win32) and attaches the DLLs to the run as
+`SpecialK_combined_<version>_<sha>`, plus a matching `_debug_symbols` artifact.
+The fork's own *Builds* workflow does not run for `combined`, because pushes
+made by an Action never trigger other workflows.
+
 ## Adding or removing a branch
 
 Edit [`branches.txt`](branches.txt) on this branch. The next run picks it up.
