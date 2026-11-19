@@ -1,0 +1,59 @@
+# automation
+
+This branch holds no Special K code. It holds the GitHub Action that builds
+the **`combined`** branch: upstream
+[SpecialKO/SpecialK](https://github.com/SpecialKO/SpecialK) `main` with every
+branch in [`branches.txt`](branches.txt) merged on top, in order.
+
+`combined` is rebuilt from scratch and force-pushed every time, so never
+commit to it. Fix things on the source branch they belong to.
+
+## When it runs
+
+- **Every hour.** The run only fingerprints its inputs: upstream `main`, each
+  listed branch and this branch. It rebuilds only when one of them has
+  changed, and it pushes only when the resulting content differs from
+  `combined`.
+- **On demand.** Go to *Actions → Rebuild combined → Run workflow*. Tick
+  *force* to rebuild even when nothing changed.
+
+You do not need to sync `main` for `combined` to pick up upstream changes,
+because the Action fetches upstream directly.
+
+## Adding or removing a branch
+
+Edit [`branches.txt`](branches.txt) on this branch. The next run picks it up.
+
+## Merge conflicts
+
+Known conflicts are resolved automatically from [`rr-cache/`](rr-cache), using
+git's `rerere`. A new conflict makes the run fail. The run's summary shows the
+conflicting diff, and GitHub emails you about the failure. The same inputs are
+not retried every hour.
+
+To fix a conflict:
+
+- **Fix it on a source branch.** For example, rebase one branch so the two no
+  longer clash. Or:
+- **Record a resolution.** Run `rebuild.sh` locally (Git Bash works), from a
+  clone with `core.autocrlf=false`:
+
+  ```sh
+  git clone -c core.autocrlf=false https://github.com/Aemony/SpecialK
+  cd SpecialK
+  git worktree add ../automation automation
+  cd ../automation
+  bash rebuild.sh           # stops at the conflict and prints where
+  # resolve it in that folder, then: git add -A && git commit --no-edit
+  bash rebuild.sh           # replays the resolution and saves it into rr-cache/
+  git add rr-cache && git commit -m "Record resolution" && git push
+  ```
+
+  `PUSH=1 bash rebuild.sh` also pushes the result, so you don't have to wait
+  for the Action.
+
+## Recorded resolutions
+
+| Branches | File | Resolution |
+|---|---|---|
+| `fix/winevent-hook-on-window-thread` + `fix/yakuza-kiwami` | `src/window.cpp`, start of `SK_DetourWindowProc` | Keep both: the deferred WinEvent hook install, then the Yakuza `WM_SIZE` filter |

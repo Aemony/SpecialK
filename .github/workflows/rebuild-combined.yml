@@ -1,0 +1,72 @@
+name: Rebuild combined
+
+on:
+  schedule:
+    - cron: '17 * * * *'   # hourly; does nothing unless an input changed
+  workflow_dispatch:
+    inputs:
+      force:
+        description: Rebuild even if nothing changed
+        type: boolean
+        default: false
+
+permissions:
+  contents: write
+
+concurrency:
+  group: rebuild-combined
+
+env:
+  UPSTREAM_URL: https://github.com/SpecialKO/SpecialK.git
+  UPSTREAM_BRANCH: main
+  TARGET: combined
+
+jobs:
+  rebuild:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: automation
+          fetch-depth: 0
+
+      # Hash of everything the result depends on; an unchanged hash skips the run.
+      - name: Fingerprint inputs
+        id: fp
+        run: |
+          {
+            echo "automation $GITHUB_SHA"
+            git ls-remote "$UPSTREAM_URL" "refs/heads/$UPSTREAM_BRANCH"
+            sed -e 's/\r$//' -e 's/#.*//' -e 's/[[:space:]]*$//' branches.txt | grep -v '^$' |
+              while read -r b; do git ls-remote origin "refs/heads/$b"; done
+          } | tee "$RUNNER_TEMP/inputs.txt"
+          echo "key=combined-inputs-$(sha256sum "$RUNNER_TEMP/inputs.txt" | cut -c1-40)" >> "$GITHUB_OUTPUT"
+
+      - name: Check whether these inputs were already built
+        id: seen
+        if: ${{ !inputs.force }}
+        uses: actions/cache/restore@v4
+        with:
+          path: ${{ runner.temp }}/inputs.txt
+          key: ${{ steps.fp.outputs.key }}
+          lookup-only: true
+
+      - name: Rebuild
+        id: rebuild
+        if: steps.seen.outputs.cache-hit != 'true'
+        env:
+          PUSH: '1'
+          GIT_AUTHOR_NAME: github-actions[bot]
+          GIT_AUTHOR_EMAIL: 41898282+github-actions[bot]@users.noreply.github.com
+          GIT_COMMITTER_NAME: github-actions[bot]
+          GIT_COMMITTER_EMAIL: 41898282+github-actions[bot]@users.noreply.github.com
+        run: bash rebuild.sh
+
+      # Saved even after a failed rebuild, so an unresolved conflict fails once
+      # instead of every hour. A change to any input (or a forced run) retries.
+      - name: Remember these inputs
+        if: always() && steps.seen.outputs.cache-hit != 'true' && steps.rebuild.outcome != 'skipped'
+        uses: actions/cache/save@v4
+        with:
+          path: ${{ runner.temp }}/inputs.txt
+          key: ${{ steps.fp.outputs.key }}

@@ -1,0 +1,15 @@
+# Branches of this fork that are merged, in this order, on top of
+# SpecialKO/SpecialK main to build the "combined" branch.
+# One branch per line; anything after a # is ignored.
+
+crash-handler-null-ip
+fix-crash-stutters
+fix-exit-crashes
+fix/edf41-radial-menu-click
+fix/winevent-hook-on-window-thread
+fix/yakuza-kiwami
+perilous-warp-vdebug-fix
+steam-proof-of-purchase-key
+d3d9-texmod
+d3d10-prototype
+nier_menu

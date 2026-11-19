@@ -1,0 +1,4 @@
+# rerere matches conflicts byte for byte; never convert line endings here.
+rr-cache/** -text
+*.sh        text eol=lf
+*.yml       text eol=lf
