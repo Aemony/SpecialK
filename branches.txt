@@ -2,14 +2,14 @@
 # SpecialKO/SpecialK main to build the "combined" branch.
 # One branch per line; anything after a # is ignored.
 
-crash-handler-null-ip
-fix-crash-stutters
-fix-exit-crashes
-fix/edf41-radial-menu-click
-fix/winevent-hook-on-window-thread
+bypass/steam-proof-of-purchase-key
+feat/d3d10-prototype
+feat/d3d9-texmod
+improve/nier_menu
+fix/crash-handler-null-ip
+fix/perilous-warp-vdebug
+fix/exit-crashes
+fix/crash-stutters
 fix/yakuza-kiwami
-perilous-warp-vdebug-fix
-steam-proof-of-purchase-key
-d3d9-texmod
-d3d10-prototype
-nier_menu
+fix/winevent-hook-on-window-thread
+fix/edf41-radial-menu-click
