@@ -140,6 +140,8 @@ struct TexThreadStats {
     unsigned int           archive = std::numeric_limits <unsigned int>::max ();
              int           fileno  = 0UL;
     enum     TexLoadMethod method  = DontCare;
+             uint32_t      file_checksum = 0x00; // Checksum the file is named after, if this
+                                                 //   record is an alias for another checksum
     volatile LONG          removed = FALSE; // Rather than removing entries and
                                            //   shuffling lists in memory, alter this
   };
@@ -214,6 +216,16 @@ struct TexThreadStats {
     }
 
     void                       reset               (void);
+
+    // Call with the device a texture is being created on. If the game has
+    //   moved on to a different device, everything held on behalf of the old
+    //     one is released (which also allows that device to be destroyed).
+    void                       useDevice           (IDirect3DDevice9* pDevice);
+
+    // Strips a texture of its checksum and replacement, and takes it out of
+    //   the cache; for when the game has written a different image to it.
+    void                       forgetTexture       (ISKTextureD3D9* pTexD3D9);
+    IDirect3DDevice9*          pLastDevice         = nullptr; // Not a reference
     void                       purge               (void); // WIP
 
     size_t                     numTextures         (void) const {
@@ -263,6 +275,10 @@ struct TexThreadStats {
 
 
     HRESULT                    dumpTexture          (D3DFORMAT fmt, uint32_t checksum, IDirect3DTexture9* pTex);
+
+    // Cube and volume textures
+    HRESULT                    dumpBaseTexture      (D3DFORMAT fmt, uint32_t checksum, IDirect3DBaseTexture9* pTex);
+    bool                       readInjectable       (uint32_t  checksum, std::vector <uint8_t>& data);
     bool                       deleteDumpedTexture  (D3DFORMAT fmt, uint32_t checksum);
     bool                       isTextureDumped      (uint32_t  checksum);
 
@@ -274,6 +290,17 @@ struct TexThreadStats {
     bool                       removeInjectableTexture (uint32_t        checksum);
     size_t                     getInjectableTextures   (TexList&        texure_list) const;
     TexRecord&                 getInjectableTexture    (uint32_t        checksum);
+
+    // Full path of a replacement stored as a loose file (empty for archives);
+    //   wszPath must have room for MAX_PATH + 2 characters.
+    void                       getInjectablePath       (      uint32_t   checksum,
+                                                        const TexRecord& record,
+                                                              wchar_t*   wszPath);
+
+    // Lets a texture identified by one checksum (i.e. of the file it was loaded
+    //   from) use the replacement that exists for its pixel checksum.
+    bool                       aliasInjectable         (uint32_t        checksum,
+                                                        uint32_t        pixel_checksum);
 
     bool                       isTextureBlacklisted    (uint32_t        checksum)    const;
 
@@ -394,6 +421,7 @@ public:
     CRITICAL_SECTION                                         cs_unreferenced = { };
 
     concurrent_unordered_map <uint32_t, TexRecord>           injectable_textures;
+    concurrent_unordered_map <uint32_t, uint32_t>            injectable_aliases; // checksum -> pixel checksum
     std::vector              <std::wstring>                  archives;
     concurrent_unordered_map <int32_t, bool>                 dumped_textures;
 
@@ -518,6 +546,10 @@ public:
       events_.shutdown =
         SK_CreateEvent (nullptr, FALSE, FALSE, nullptr);
 
+      // Auto-reset: set by a worker each time it finishes a job (TextureWorkerThread::finishJob)
+      events_.worker_idle =
+        SK_CreateEvent (nullptr, FALSE, FALSE, nullptr);
+
       constexpr int MAX_THREADS = 5;///*config.textures.worker_threads*/ 4 / 2;
 
       if (! init_worker_sync_)
@@ -551,6 +583,7 @@ public:
       SK_CloseHandle (events_.results_waiting);
       SK_CloseHandle (events_.jobs_added);
       SK_CloseHandle (events_.shutdown);
+      SK_CloseHandle (events_.worker_idle);
     }
 
     void postJob (TexLoadRequest* job);
@@ -617,34 +650,28 @@ public:
   protected:
     static DWORD __stdcall Spooler (LPVOID user);
 
+    // The next job queued, or nullptr if there is none (it does not wait for one: the spooler waits on jobs_added).
+    //
+    //   jobs_added is a manual-reset event that postJob sets for every job. It may only be reset once the queue is
+    //     empty, and the queue must be checked again after resetting it: a job posted between a failed pop and the
+    //       reset would otherwise have its signal erased, and sit in the queue until another job is posted. Textures
+    //         created back to back (as games do at launch) then left one stuck in flight, and a device reset waiting
+    //           for it (TextureManager::reset) never finished.
     TexLoadRequest* getNextJob   (void)
     {
-      TexLoadRequest* job       = nullptr;
-      DWORD           dwResults = 0;
-
-      dwResults =
-        SK_WaitForSingleObject (events_.jobs_added, 0UL);
-
-      while (dwResults != WAIT_OBJECT_0)
-      {
-        dwResults =
-          SK_WaitForSingleObject (events_.jobs_added, 0);
-      }
-      
-      if (0 == ReadAcquire (&jobs_waiting_))
-        return nullptr;
-
       SK::D3D9::TexLoadRef ref (nullptr);
 
-      while (! jobs_.empty ())
-      {    if (jobs_.try_pop (ref)) break; }
+      if (! jobs_.try_pop (ref))
+      {
+        ResetEvent (events_.jobs_added);
 
-      job = ref;
+        if (! jobs_.try_pop (ref))
+          return nullptr;
+      }
 
       InterlockedDecrement (&jobs_waiting_);
-      ResetEvent       (events_.jobs_added);
 
-      return job;
+      return ref;
     }
 
     friend class SK::D3D9::TextureManager;
@@ -688,6 +715,7 @@ public:
       HANDLE jobs_added;
       HANDLE results_waiting;
       HANDLE shutdown;
+      HANDLE worker_idle;
     } events_;
 
     //SK_Thread_HybridSpinlock cs_jobs_    =
@@ -786,6 +814,10 @@ struct SK_D3D9_TextureStorageBase
   Concurrency::
   concurrent_unordered_map <uint32_t, int32_t>            _injected_refs;
 
+  // Every wrapper that has been constructed and not yet deleted; used to
+  //   validate wrapper pointers recovered from a native texture's private data.
+  SK_ThreadSafe_HashSet <ISKTextureD3D9 *>                _live_wrappers;
+
   SK_ThreadSafe_HashSet <IDirect3DSurface9 *>             _outstanding_screenshots;
                                            // Not excellent screenshots, but screenhots
                                            //   that aren't finished yet and we can't reset
@@ -808,6 +840,16 @@ SK_D3D9_GetBasicTextureDataStore (void);
 #define stream_pool             SK_D3D9_GetBasicTextureDataStore ()._stream_pool
 
 
+using SK_D3D9_Surface_LockRect_pfn   = HRESULT (STDMETHODCALLTYPE *)
+  ( IDirect3DSurface9* This, D3DLOCKED_RECT* pLockedRect, const RECT* pRect, DWORD Flags );
+using SK_D3D9_Surface_UnlockRect_pfn = HRESULT (STDMETHODCALLTYPE *)
+  ( IDirect3DSurface9* This );
+
+// Hooks LockRect and UnlockRect for the class of surface that pSurface is an
+//   instance of, if that has not been done already.
+void
+SK_D3D9_HookSurfaceLocks (IDirect3DSurface9* pSurface);
+
 interface ISKTextureD3D9 : public IDirect3DTexture9
 {
 public:
@@ -818,7 +860,70 @@ public:
     Override = 2
   };
 
-  virtual ~ISKTextureD3D9 (void) { };
+  virtual ~ISKTextureD3D9 (void)
+  {
+    SK_D3D9_GetBasicTextureDataStore ()._live_wrappers.erase (this);
+  };
+
+  // Tags a native texture with the wrapper that is standing in for it, so that
+  //   the wrapper can be found again when all we have is the native pointer
+  //     (i.e. IDirect3DDevice9::GetTexture).
+  void tagNative (IDirect3DBaseTexture9* pNative)
+  {
+    if (pNative == nullptr || pNative == this)
+      return;
+
+    // Never tag through another wrapper; it forwards to a texture it owns.
+    void*                                               dontcare = nullptr;
+    if (pNative->QueryInterface (IID_SKTextureD3D9, &dontcare) == S_OK)
+      return;
+
+    ISKTextureD3D9* pThis = this;
+
+    pNative->SetPrivateData (
+      IID_SKTextureD3D9, &pThis, sizeof (pThis), 0x0
+    );
+  }
+
+  // The override texture is shared by every wrapper with the same checksum,
+  //   so it is tagged as it is bound rather than when it is assigned.
+  void tagOverride (void)
+  {
+    if (pTexOverride != nullptr && std::exchange (pTaggedOverride, pTexOverride) != pTexOverride)
+      tagNative (pTexOverride);
+  }
+
+  // Returns the live wrapper that draws using pNative, or nullptr.
+  //
+  //   Does not add a reference.
+  static ISKTextureD3D9* fromNative (IDirect3DBaseTexture9* pNative)
+  {
+    if (pNative == nullptr)
+      return nullptr;
+
+    ISKTextureD3D9* pWrapper = nullptr;
+    DWORD           dwSize   = sizeof (pWrapper);
+
+    if ( FAILED (pNative->GetPrivateData (IID_SKTextureD3D9, &pWrapper, &dwSize)) ||
+                                    dwSize != sizeof (pWrapper)                 ||
+                                              nullptr == pWrapper )
+    {
+      return nullptr;
+    }
+
+    // The tag outlives the wrapper if the device still has the native texture bound
+    if (! SK_D3D9_GetBasicTextureDataStore ()._live_wrappers.contains (pWrapper))
+      return nullptr;
+
+    if (  pWrapper->freed || ReadAcquire (&pWrapper->refs) <= 0 ||
+        ( pWrapper->pTex         != pNative &&
+          pWrapper->pTexOverride != pNative ) )
+    {
+      return nullptr;
+    }
+
+    return pWrapper;
+  }
 
   ISKTextureD3D9 (IDirect3DTexture9 **ppTex, SIZE_T size, uint32_t crc32c)
   {
@@ -838,6 +943,10 @@ public:
       InterlockedExchange (&refs, 1);
 
       img_to_use    = ContentPreference::DontCare;
+
+      SK_D3D9_GetBasicTextureDataStore ()._live_wrappers.emplace (this);
+
+      tagNative (pTex);
   };
 
   /*** IUnknown methods ***/
@@ -888,6 +997,9 @@ public:
         if ( FAILED (pTex->QueryInterface (IID_SKTextureD3D9, &dontcare)) &&
                                   std::exchange (freed, true) == false )
         {
+          // The device may keep the native texture alive beyond this point
+          pTex->FreePrivateData (IID_SKTextureD3D9);
+
           std::exchange (pTex, nullptr)->Release ();
 
           if (std::exchange (pTexOverride, nullptr) != nullptr)
@@ -1078,7 +1190,20 @@ public:
     if (pTex == nullptr)
       return S_OK;
 
-    return pTex->GetSurfaceLevel (Level, ppSurfaceLevel);
+    const HRESULT hr =
+      pTex->GetSurfaceLevel (Level, ppSurfaceLevel);
+
+    // The game can lock this surface directly instead of the texture, which
+    //   bypasses the wrapper; hook the surface so the upload is still seen.
+    if (SUCCEEDED (hr) && Level == 0 && ppSurfaceLevel != nullptr && *ppSurfaceLevel != nullptr)
+    {
+      // Not a reference, the surface lives exactly as long as the texture
+      pSurfaceLvl0 = *ppSurfaceLevel;
+
+      SK_D3D9_HookSurfaceLocks (pSurfaceLvl0);
+    }
+
+    return hr;
   }
   STDMETHOD(LockRect)(THIS_ UINT Level,D3DLOCKED_RECT* pLockedRect,CONST RECT* pRect,DWORD Flags)  override
   {
@@ -1094,22 +1219,62 @@ public:
     if (pTex == nullptr)
       return S_OK;
 
+    in_native_lock = true;
+
     const HRESULT hr =
       pTex->LockRect (Level, pLockedRect, pRect, Flags);
 
-    if (SUCCEEDED (hr))
-    {
-      if (Level == 0)
-      {
-        lock_lvl0 = *pLockedRect;
-        dirty     = true;
-        begin_map = SK_QueryPerf ();
-      }
-    }
+    in_native_lock = false;
+
+    if (SUCCEEDED (hr) && Level == 0)
+      noteLockLvl0 (pLockedRect, pRect, Flags);
 
     return hr;
   }
-  STDMETHOD(UnlockRect)(THIS_ UINT Level);
+
+  // Bookkeeping for a successful lock of LOD 0, whether it was locked
+  //   through the texture or through the surface for that level.
+  void noteLockLvl0 (const D3DLOCKED_RECT* pLockedRect, const RECT* pRect, DWORD Flags)
+  {
+    lock_lvl0_hashable = false;
+
+    // A read-only lock cannot change the contents
+    if ((Flags & D3DLOCK_READONLY) == 0 && pLockedRect != nullptr && pTex != nullptr)
+    {
+      lock_lvl0 = *pLockedRect;
+      dirty     = true;
+      begin_map = SK_QueryPerf ();
+
+      // The checksum covers the entire top-level image; pBits only points
+      //   to the start of that image if the whole thing is locked.
+      lock_lvl0_hashable = true;
+
+      if (pRect != nullptr)
+      {
+        D3DSURFACE_DESC desc = { };
+
+        lock_lvl0_hashable =
+          SUCCEEDED (pTex->GetLevelDesc (0, &desc))    &&
+                pRect->left   == 0                     &&
+                pRect->top    == 0                     &&
+                pRect->right  == (LONG)desc.Width      &&
+                pRect->bottom == (LONG)desc.Height;
+      }
+    }
+  }
+
+  // Unlocks a level, checksumming LOD 0 first if it was just written for the
+  //   first time. When the lock was taken through the level's surface, that
+  //     surface and its original UnlockRect are passed in.
+  HRESULT unlockLevel ( UINT                               Level,
+                        IDirect3DSurface9*                 pSurface,
+                        SK_D3D9_Surface_UnlockRect_pfn     pfnSurfaceUnlock );
+
+  STDMETHOD(UnlockRect)(THIS_ UINT Level) override
+  {
+    return
+      unlockLevel (Level, nullptr, nullptr);
+  }
   STDMETHOD(AddDirtyRect)(THIS_ CONST RECT* pDirtyRect)  override
   {
     if (config.system.log_level > 1)
@@ -1147,6 +1312,8 @@ public:
   IDirect3DTexture9* pTex;          // The original texture data
   SSIZE_T            tex_size;      //   Original data size
   uint32_t           tex_crc32c;    //   Original data checksum
+  uint32_t           pixel_crc32c = 0x00; // Checksum of LOD 0's pixels, if known; this is the
+                                          //   same as tex_crc32c unless D3DX9 loaded the texture
 
   IDirect3DTexture9* pTexOverride;  // The overridden texture data (nullptr if unchanged)
   SSIZE_T            override_size; //   Override data size
@@ -1158,6 +1325,18 @@ public:
                                     //
                                     //
 
+  IDirect3DTexture9* pTaggedOverride = nullptr; // Last override tagged with this wrapper
+
+  bool               lock_lvl0_hashable = false;// LOD 0 is locked for writing, in its entirety
+  bool               in_native_lock     = false;// Inside the native texture's LockRect / UnlockRect,
+                                                //   which may call the (hooked) surface's methods
+  IDirect3DSurface9* pSurfaceLvl0       = nullptr; // Surface for LOD 0, if the game has asked for it
+
+  // A texture the game keeps writing new images to (video, or an atlas that
+  //   is rebuilt constantly) has no fixed identity and is left alone.
+  bool               volatile_contents  = false;
+  int                rewrite_burst      = 0;        // Rewrites in quick succession
+  LARGE_INTEGER      last_rewrite       = { 0, 0 };
   D3DLOCKED_RECT     lock_lvl0  = {      };
   int                uses       =      0;
   LARGE_INTEGER      begin_map  = { 0, 0 };
@@ -1330,3 +1509,268 @@ typedef HRESULT (STDMETHODCALLTYPE *SetDepthStencilSurface_pfn)(
   _In_ IDirect3DDevice9      *This,
   _In_ IDirect3DSurface9     *pNewZStencil
 );
+
+// The original (unhooked) texture loaders of one d3dx9_NN.dll.
+//
+//   Games link against a specific version of D3DX9 and more than one version
+//   may be loaded at once, so each hooked module keeps its own originals.
+struct SK_D3DX9_HookSet
+{
+  HMODULE                                       hMod             = nullptr;
+  wchar_t                                       wszName [32]     = {     };
+
+  D3DXCreateTextureFromFileInMemoryEx_pfn       InMemoryEx       = nullptr;
+  D3DXCreateTextureFromFileExW_pfn              FileExW          = nullptr;
+  D3DXCreateTextureFromFileExA_pfn              FileExA          = nullptr;
+  D3DXCreateVolumeTextureFromFileInMemoryEx_pfn VolumeInMemoryEx = nullptr;
+  D3DXCreateCubeTextureFromFileInMemoryEx_pfn   CubeInMemoryEx   = nullptr;
+};
+
+// The originals belonging to the D3DX9 module whose hook the calling thread
+//   is currently inside of; otherwise those of the first module hooked (all
+//     members are nullptr when no D3DX9 module has been hooked).
+const SK_D3DX9_HookSet&
+SK_D3DX9_ActiveHooks (void);
+
+// Hooks the texture loaders of every loaded d3dx9_NN.dll that has not been
+//   hooked yet; cheap to call repeatedly, does nothing until the texture
+//     manager has installed its hooks.
+void
+SK_D3D9_HookD3DX9 (bool apply_immediately);
+
+
+//
+// Cube and volume texture wrappers
+//
+//   These are much simpler than the wrapper for 2D textures: they are only
+//   created for textures loaded from a file by D3DX9, the replacement is
+//   loaded before the game gets the texture back, and nothing is cached.
+//
+const GUID IID_SKBaseTextureD3D9 =
+  { 0x5d1f0c3a, 0x8e42, 0x4c7b, 0x9a, 0x61, 0x3e, 0x7d, 0x2b, 0x90, 0xc4, 0x18 };
+
+// What the device hooks need to know about a wrapped cube or volume texture;
+//   QueryInterface for IID_SKBaseTextureD3D9 on a wrapper returns one of these
+//     (without adding a reference).
+struct SK_D3D9_WrappedTexture
+{
+  IDirect3DBaseTexture9* pWrapper  = nullptr; // What the game holds
+  IDirect3DBaseTexture9* pNative   = nullptr; // What the game loaded
+  IDirect3DBaseTexture9* pOverride = nullptr; // What gets drawn instead (optional)
+  IDirect3DBaseTexture9* pTagged   = nullptr; // Last override tagged with pWrapper
+  uint32_t               crc32c    = 0x0;
+
+  IDirect3DBaseTexture9* getDrawTexture (void) const;
+  void                   tag            (IDirect3DBaseTexture9* pTexture) const;
+  void                   tagOverride    (void);
+};
+
+// Wrapper info for a texture the game passed in, or nullptr if it is not
+//   a wrapped cube or volume texture.
+SK_D3D9_WrappedTexture*
+SK_D3D9_GetWrappedTexture (IDirect3DBaseTexture9* pTexture);
+
+// The live cube or volume wrapper that draws using pNative, or nullptr.
+//
+//   Does not add a reference.
+IDirect3DBaseTexture9*
+SK_D3D9_BaseWrapperFromNative (IDirect3DBaseTexture9* pNative);
+
+void SK_D3D9_RegisterBaseWrapper   (IDirect3DBaseTexture9* pWrapper);
+void SK_D3D9_UnregisterBaseWrapper (IDirect3DBaseTexture9* pWrapper);
+
+// Everything that IDirect3DCubeTexture9 and IDirect3DVolumeTexture9 share
+template <class _Interface>
+class SK_D3D9_TextureWrapper : public _Interface
+{
+public:
+  SK_D3D9_TextureWrapper (_Interface* pTex, uint32_t crc32c) : pTex_ (pTex)
+  {
+    info_.pWrapper = this;
+    info_.pNative  = pTex;
+    info_.crc32c   = crc32c;
+
+    SK_D3D9_RegisterBaseWrapper (this);
+
+    info_.tag (pTex);
+  }
+
+  virtual ~SK_D3D9_TextureWrapper (void)
+  {
+    SK_D3D9_UnregisterBaseWrapper (this);
+  }
+
+  // Takes ownership of the reference held by the caller
+  void setOverride (_Interface* pOverride)
+  {
+    if (pOverride_ != nullptr)
+        pOverride_->Release ();
+
+    pOverride_      = pOverride;
+    info_.pOverride = pOverride;
+  }
+
+  /*** IUnknown methods ***/
+  STDMETHOD(QueryInterface)(THIS_ REFIID riid, void** ppvObj) override
+  {
+    if (ppvObj == nullptr)
+      return E_POINTER;
+
+    if (IsEqualGUID (riid, IID_SKBaseTextureD3D9))
+    {
+      *ppvObj = &info_;
+
+      return S_OK;
+    }
+
+    if ( IsEqualGUID (riid, IID_IUnknown)              != FALSE ||
+         IsEqualGUID (riid, IID_IDirect3DResource9)    != FALSE ||
+         IsEqualGUID (riid, IID_IDirect3DBaseTexture9) != FALSE ||
+         IsEqualGUID (riid, __uuidof (_Interface))     != FALSE    )
+    {
+      AddRef ();
+
+      *ppvObj = this;
+
+      return S_OK;
+    }
+
+    *ppvObj = nullptr;
+
+    return E_NOINTERFACE;
+  }
+  STDMETHOD_(ULONG,AddRef)(THIS) override
+  {
+    return
+      InterlockedIncrement (&refs_);
+  }
+  STDMETHOD_(ULONG,Release)(THIS) override
+  {
+    const ULONG ret =
+      InterlockedDecrement (&refs_);
+
+    if (ret == 0)
+    {
+      // The device may keep either texture alive beyond this point
+      pTex_->FreePrivateData (IID_SKBaseTextureD3D9);
+      pTex_->Release         ();
+
+      if (pOverride_ != nullptr)
+      {
+        IDirect3DBaseTexture9* pTagged = nullptr;
+        DWORD                  dwSize  = sizeof (pTagged);
+
+        if ( SUCCEEDED (pOverride_->GetPrivateData (IID_SKBaseTextureD3D9, &pTagged, &dwSize)) &&
+                                                                            pTagged == this )
+        {
+          pOverride_->FreePrivateData (IID_SKBaseTextureD3D9);
+        }
+
+        pOverride_->Release ();
+      }
+
+      delete this;
+    }
+
+    return ret;
+  }
+
+  /*** IDirect3DResource9 methods ***/
+  STDMETHOD(GetDevice)(THIS_ IDirect3DDevice9** ppDevice) override {
+    return pTex_->GetDevice (ppDevice);
+  }
+  STDMETHOD(SetPrivateData)(THIS_ REFGUID refguid,CONST void* pData,DWORD SizeOfData,DWORD Flags) override {
+    return pTex_->SetPrivateData (refguid, pData, SizeOfData, Flags);
+  }
+  STDMETHOD(GetPrivateData)(THIS_ REFGUID refguid,void* pData,DWORD* pSizeOfData) override {
+    return pTex_->GetPrivateData (refguid, pData, pSizeOfData);
+  }
+  STDMETHOD(FreePrivateData)(THIS_ REFGUID refguid) override {
+    return pTex_->FreePrivateData (refguid);
+  }
+  STDMETHOD_(DWORD, SetPriority)(THIS_ DWORD PriorityNew) override {
+    return pTex_->SetPriority (PriorityNew);
+  }
+  STDMETHOD_(DWORD, GetPriority)(THIS) override {
+    return pTex_->GetPriority ();
+  }
+  STDMETHOD_(void, PreLoad)(THIS) override {
+    pTex_->PreLoad ();
+
+    if (pOverride_ != nullptr)
+        pOverride_->PreLoad ();
+  }
+  STDMETHOD_(D3DRESOURCETYPE, GetType)(THIS) override {
+    return pTex_->GetType ();
+  }
+
+  /*** IDirect3DBaseTexture9 methods ***/
+  STDMETHOD_(DWORD, SetLOD)(THIS_ DWORD LODNew) override {
+    return pTex_->SetLOD (LODNew);
+  }
+  STDMETHOD_(DWORD, GetLOD)(THIS) override {
+    return pTex_->GetLOD ();
+  }
+  STDMETHOD_(DWORD, GetLevelCount)(THIS) override {
+    return pTex_->GetLevelCount ();
+  }
+  STDMETHOD(SetAutoGenFilterType)(THIS_ D3DTEXTUREFILTERTYPE FilterType) override {
+    return pTex_->SetAutoGenFilterType (FilterType);
+  }
+  STDMETHOD_(D3DTEXTUREFILTERTYPE, GetAutoGenFilterType)(THIS) override {
+    return pTex_->GetAutoGenFilterType ();
+  }
+  STDMETHOD_(void, GenerateMipSubLevels)(THIS) override {
+    pTex_->GenerateMipSubLevels ();
+  }
+
+protected:
+  _Interface*            pTex_      = nullptr;
+  _Interface*            pOverride_ = nullptr;
+  SK_D3D9_WrappedTexture info_;
+  volatile LONG          refs_      = 1;
+};
+
+class ISKCubeTextureD3D9 final : public SK_D3D9_TextureWrapper <IDirect3DCubeTexture9>
+{
+public:
+  using SK_D3D9_TextureWrapper <IDirect3DCubeTexture9>::SK_D3D9_TextureWrapper;
+
+  STDMETHOD(GetLevelDesc)(THIS_ UINT Level,D3DSURFACE_DESC *pDesc) override {
+    return pTex_->GetLevelDesc (Level, pDesc);
+  }
+  STDMETHOD(GetCubeMapSurface)(THIS_ D3DCUBEMAP_FACES FaceType,UINT Level,IDirect3DSurface9** ppCubeMapSurface) override {
+    return pTex_->GetCubeMapSurface (FaceType, Level, ppCubeMapSurface);
+  }
+  STDMETHOD(LockRect)(THIS_ D3DCUBEMAP_FACES FaceType,UINT Level,D3DLOCKED_RECT* pLockedRect,CONST RECT* pRect,DWORD Flags) override {
+    return pTex_->LockRect (FaceType, Level, pLockedRect, pRect, Flags);
+  }
+  STDMETHOD(UnlockRect)(THIS_ D3DCUBEMAP_FACES FaceType,UINT Level) override {
+    return pTex_->UnlockRect (FaceType, Level);
+  }
+  STDMETHOD(AddDirtyRect)(THIS_ D3DCUBEMAP_FACES FaceType,CONST RECT* pDirtyRect) override {
+    return pTex_->AddDirtyRect (FaceType, pDirtyRect);
+  }
+};
+
+class ISKVolumeTextureD3D9 final : public SK_D3D9_TextureWrapper <IDirect3DVolumeTexture9>
+{
+public:
+  using SK_D3D9_TextureWrapper <IDirect3DVolumeTexture9>::SK_D3D9_TextureWrapper;
+
+  STDMETHOD(GetLevelDesc)(THIS_ UINT Level,D3DVOLUME_DESC *pDesc) override {
+    return pTex_->GetLevelDesc (Level, pDesc);
+  }
+  STDMETHOD(GetVolumeLevel)(THIS_ UINT Level,IDirect3DVolume9** ppVolumeLevel) override {
+    return pTex_->GetVolumeLevel (Level, ppVolumeLevel);
+  }
+  STDMETHOD(LockBox)(THIS_ UINT Level,D3DLOCKED_BOX* pLockedVolume,CONST D3DBOX* pBox,DWORD Flags) override {
+    return pTex_->LockBox (Level, pLockedVolume, pBox, Flags);
+  }
+  STDMETHOD(UnlockBox)(THIS_ UINT Level) override {
+    return pTex_->UnlockBox (Level);
+  }
+  STDMETHOD(AddDirtyBox)(THIS_ CONST D3DBOX* pDirtyBox) override {
+    return pTex_->AddDirtyBox (pDirtyBox);
+  }
+};
