@@ -39,9 +39,7 @@ jobs:
         run: |
           {
             echo "automation $GITHUB_SHA"
-            git ls-remote "$UPSTREAM_URL" "refs/heads/$UPSTREAM_BRANCH"
-            sed -e 's/\r$//' -e 's/#.*//' -e 's/[[:space:]]*$//' branches.txt | grep -v '^$' |
-              while read -r b; do git ls-remote origin "refs/heads/$b"; done
+            bash rebuild.sh --list
           } | tee "$RUNNER_TEMP/inputs.txt"
           echo "key=combined-inputs-$(sha256sum "$RUNNER_TEMP/inputs.txt" | cut -c1-40)" >> "$GITHUB_OUTPUT"
 

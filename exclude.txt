@@ -1,0 +1,12 @@
+# Every branch of this fork is merged into "combined", in alphabetical order,
+# on top of SpecialKO/SpecialK main, except branches matching a line below.
+#
+# One pattern per line; anything after a # is ignored. Patterns are shell
+# globs and * also matches /, so "release*" excludes "release" and
+# "release/1.0", and "wip/*" excludes everything under wip/.
+# "automation" and "combined" are always excluded.
+
+main
+dev
+release*
+pre-release*

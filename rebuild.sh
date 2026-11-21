@@ -1,9 +1,14 @@
 #!/usr/bin/env bash
-# Rebuilds the "combined" branch from scratch: upstream main + every branch
-# listed in branches.txt, merged in order.
+# Rebuilds the "combined" branch from scratch: upstream main + every branch of
+# origin that does not match a pattern in exclude.txt, merged alphabetically.
 #
 # Runs in GitHub Actions (.github/workflows/rebuild-combined.yml) and locally
-# from a checkout of the automation branch. Environment:
+# from a checkout of the automation branch.
+#   bash rebuild.sh          build combined (PUSH=1 also pushes it)
+#   bash rebuild.sh --list   print "<sha> <ref>" for upstream and every included
+#                            branch, without fetching anything; the workflow
+#                            fingerprints this to skip runs with no changes
+# Environment:
 #   PUSH=1           push the result (default: only build it)
 #   UPSTREAM_URL     default https://github.com/SpecialKO/SpecialK.git
 #   UPSTREAM_BRANCH  default main
@@ -19,7 +24,41 @@ UPSTREAM_BRANCH=${UPSTREAM_BRANCH:-main}
 TARGET=${TARGET:-combined}
 PUSH=${PUSH:-0}
 
-mapfile -t branches < <(sed -e 's/\r$//' -e 's/#.*//' -e 's/[[:space:]]*$//' "$here/branches.txt" | grep -v '^$')
+# --- Pick branches -------------------------------------------------------------
+mapfile -t patterns < <(sed -e 's/\r$//' -e 's/#.*//' -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//' "$here/exclude.txt" | grep -v '^$' || true)
+patterns+=(automation "$TARGET")
+
+excluded () {
+  local p
+  for p in "${patterns[@]}"; do
+    # shellcheck disable=SC2254  # unquoted on purpose: $p is a glob
+    case "$1" in $p) return 0 ;; esac
+  done
+  return 1
+}
+
+heads=$(git -C "$here" ls-remote --heads origin | LC_ALL=C sort -k2)
+branches=()
+included_heads=""
+while read -r sha ref; do
+  [ -n "$ref" ] || continue
+  b=${ref#refs/heads/}
+  excluded "$b" && continue
+  branches+=("$b")
+  included_heads+="$sha $ref"$'\n'
+done <<< "$heads"
+
+if [ "${1:-}" = "--list" ]; then
+  git ls-remote "$UPSTREAM_URL" "refs/heads/$UPSTREAM_BRANCH"
+  printf '%s' "$included_heads"
+  exit 0
+fi
+
+if [ ${#branches[@]} -eq 0 ]; then
+  echo "::error::No branches left after applying exclude.txt"
+  exit 1
+fi
+printf 'Including %d branches:\n' ${#branches[@]}; printf '  %s\n' "${branches[@]}"
 
 git_dir=$(git -C "$here" rev-parse --path-format=absolute --git-common-dir)
 
