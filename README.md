@@ -76,6 +76,7 @@ To fix a conflict:
 |---|---|---|
 | `fix/winevent-hook-on-window-thread` + `fix/yakuza-kiwami` | `src/window.cpp`, start of `SK_DetourWindowProc` | Keep both: the deferred WinEvent hook install, then the Yakuza `WM_SIZE` filter |
 | `fix/edf41-radial-menu-click` + `fix/pop-2008-hdr-startup-crash` | `include/SpecialK/config.h` (`SK_GAME_ID`), `src/config.cpp` (exe → game ID table) | Keep both new game IDs, EDF41 first (with a comma added after its table entry) |
+| `feat/d3d9-texmod` + `improve/d3d9-skip-dxgi-hooks` | `src/diagnostics/load_library.cpp`, `SK_TraceLoadLibrary` before the `hCallingMod != SK_GetDLL ()` block | Keep both: the `SK_D3D9_HookD3DX9 (true)` call, then the DXGI application-load check |
 
 When resolving by hand on Windows, edit with something that keeps the files'
 CRLF line endings. Git Bash's `sed -i` silently converts them to LF unless
