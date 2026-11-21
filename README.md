@@ -21,9 +21,27 @@ commit to it. Fix things on the source branch they belong to.
 You do not need to sync `main` for `combined` to pick up upstream changes,
 because the Action fetches upstream directly.
 
-Every time `combined` is pushed, or on a forced run, the same workflow then
-compiles it (Release, x64 and Win32) and attaches the DLLs to the run as
-`SpecialK_combined_<version>_<sha>`, plus a matching `_debug_symbols` artifact.
+## Releases
+
+Every build of `combined` is compiled (Release, x64 and Win32) and published as
+a GitHub **Release** tagged `combined-<sha8>`, marked as the latest release.
+It has two downloads: `SpecialK_combined_<version>_<sha8>.zip` with the DLLs,
+and `..._debug_symbols.zip` with the PDBs. The release notes list the upstream
+commit it's based on and every merged branch with its commit. The same files
+are also attached to the workflow run as artifacts.
+
+- **Already released:** when a run finds that the current `combined` already
+  has a release, it builds nothing. The run instead shows a notice and a
+  summary that link to that release.
+- **No release, nothing changed:** if the current `combined` has no release
+  and no input changed since the last attempt, the last compile or publish
+  must have failed. The run only warns, so you don't get an email every hour.
+  Run the workflow with *force* to try again.
+- **Forced run:** compiles again and replaces the assets and notes of the
+  existing release.
+
+The tags keep each released `combined` commit available, even after `combined`
+itself has been rebuilt. Delete old releases and their tags whenever you like.
 The fork's own *Builds* workflow does not run for `combined`, because pushes
 made by an Action never trigger other workflows.
 

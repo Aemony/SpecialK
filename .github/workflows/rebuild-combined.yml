@@ -6,7 +6,7 @@ on:
   workflow_dispatch:
     inputs:
       force:
-        description: Rebuild even if nothing changed
+        description: Rebuild, compile and re-upload the release even if nothing changed
         type: boolean
         default: false
 
@@ -25,8 +25,10 @@ jobs:
   rebuild:
     runs-on: ubuntu-latest
     outputs:
-      sha:    ${{ steps.rebuild.outputs.sha }}
-      pushed: ${{ steps.rebuild.outputs.pushed }}
+      sha:     ${{ steps.release.outputs.sha }}
+      tag:     ${{ steps.release.outputs.tag }}
+      url:     ${{ steps.release.outputs.url }}
+      rebuilt: ${{ steps.rebuild.outcome == 'success' }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -72,13 +74,45 @@ jobs:
           path: ${{ runner.temp }}/inputs.txt
           key: ${{ steps.fp.outputs.key }}
 
+      # Every build of combined is released under the tag combined-<sha8>. If the
+      # current combined already has one, link to it instead of building again.
+      - name: Look for an existing release
+        id: release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REBUILT_SHA: ${{ steps.rebuild.outputs.sha }}
+        run: |
+          sha=$REBUILT_SHA
+          [ -n "$sha" ] || sha=$(git ls-remote origin "refs/heads/$TARGET" | cut -f1)
+          if [ -z "$sha" ]; then
+            echo "There is no $TARGET branch yet."
+            exit 0
+          fi
+          tag="$TARGET-${sha:0:8}"
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+
+          if url=$(gh release view "$tag" --repo "$GITHUB_REPOSITORY" --json url --jq .url 2>/dev/null); then
+            echo "url=$url" >> "$GITHUB_OUTPUT"
+            echo "::notice title=Already built::$TARGET at ${sha:0:8} is already released: $url"
+            {
+              echo "### ✅ Already built"
+              echo "\`$TARGET\` at \`${sha:0:8}\` is already released as [$tag]($url)."
+            } >> "$GITHUB_STEP_SUMMARY"
+          elif [ "${{ steps.rebuild.outcome }}" != "success" ] && [ "${{ inputs.force }}" != "true" ]; then
+            # Nothing changed since the last attempt, which therefore must have
+            # failed to compile or release; don't retry (and email) every hour.
+            echo "::warning title=No release::$TARGET at ${sha:0:8} has no release and nothing changed since the last attempt. Run the workflow with 'force' to try again."
+          fi
+
   # Pushes made with GITHUB_TOKEN never trigger other workflows, so the fork's
   # own "Builds" workflow does not run for combined. These jobs mirror it.
-  # Runs when combined was pushed, or on a forced manual run.
+  # Runs when the current combined has no release yet (after a rebuild that ran),
+  # or on a forced manual run.
   build:
     name: Build (${{ matrix.platform }})
     needs: rebuild
-    if: needs.rebuild.outputs.pushed == 'true' || (inputs.force && needs.rebuild.outputs.sha != '')
+    if: needs.rebuild.outputs.sha != '' && (inputs.force || (needs.rebuild.outputs.url == '' && needs.rebuild.outputs.rebuilt == 'true'))
     runs-on: windows-2022
     strategy:
       fail-fast: false
@@ -113,6 +147,10 @@ jobs:
     name: Merge artifacts
     needs: [rebuild, build]
     runs-on: windows-2022
+    outputs:
+      name:        ${{ steps.prep.outputs.name }}
+      version:     ${{ steps.prep.outputs.version }}
+      has_symbols: ${{ steps.prep.outputs.has_symbols }}
     steps:
       - uses: actions/download-artifact@v4
         with:
@@ -132,20 +170,101 @@ jobs:
           $Dll = Get-Item ".\Builds\SpecialK64.dll", ".\Builds\SpecialK*.dll" -ErrorAction SilentlyContinue | Select-Object -First 1
           $Version = if ($Dll) { $Dll.VersionInfo.ProductVersion } else { $null }
           If ([string]::IsNullOrWhiteSpace($Version)) { $Version = "unknown" }
-          "SK_VERSION=$($Version.Trim())" | Out-File -FilePath $env:GITHUB_ENV -Encoding UTF8 -Append
-          "SHORT_SHA=$("${{ needs.rebuild.outputs.sha }}".SubString(0, 8))" | Out-File -FilePath $env:GITHUB_ENV -Encoding UTF8 -Append
+          $Version = $Version.Trim()
+          $Name = "SpecialK_combined_$($Version)_$("${{ needs.rebuild.outputs.sha }}".SubString(0, 8))"
           $HasSymbols = [bool](Get-ChildItem ".\Symbols\*.pdb" -ErrorAction SilentlyContinue)
+          "name=$Name"       | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding UTF8 -Append
+          "version=$Version" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding UTF8 -Append
           "has_symbols=$($HasSymbols.ToString().ToLower())" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding UTF8 -Append
 
       - uses: actions/upload-artifact/merge@v4
         with:
-          name: SpecialK_combined_${{ env.SK_VERSION }}_${{ env.SHORT_SHA }}
+          name: ${{ steps.prep.outputs.name }}
           pattern: build-*
           delete-merged: true
 
       - uses: actions/upload-artifact/merge@v4
         if: steps.prep.outputs.has_symbols == 'true'
         with:
-          name: SpecialK_combined_${{ env.SK_VERSION }}_${{ env.SHORT_SHA }}_debug_symbols
+          name: ${{ steps.prep.outputs.name }}_debug_symbols
           pattern: symbols-*
           delete-merged: true
+
+  release:
+    name: Publish release
+    needs: [rebuild, merge]
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ github.token }}
+      SHA:      ${{ needs.rebuild.outputs.sha }}
+      TAG:      ${{ needs.rebuild.outputs.tag }}
+      NAME:     ${{ needs.merge.outputs.name }}
+      VERSION:  ${{ needs.merge.outputs.version }}
+    steps:
+      # Enough history to walk combined's merge commits back to upstream.
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.rebuild.outputs.sha }}
+          fetch-depth: 200
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: ${{ needs.merge.outputs.name }}
+          path: ${{ runner.temp }}/dll
+
+      - uses: actions/download-artifact@v4
+        if: needs.merge.outputs.has_symbols == 'true'
+        with:
+          name: ${{ needs.merge.outputs.name }}_debug_symbols
+          path: ${{ runner.temp }}/pdb
+
+      - name: Package
+        run: |
+          mkdir -p "$RUNNER_TEMP/assets"
+          (cd "$RUNNER_TEMP/dll" && zip -9 -q "$RUNNER_TEMP/assets/$NAME.zip" *)
+          if [ -d "$RUNNER_TEMP/pdb" ]; then
+            (cd "$RUNNER_TEMP/pdb" && zip -9 -q "$RUNNER_TEMP/assets/${NAME}_debug_symbols.zip" *)
+          fi
+          ls -l "$RUNNER_TEMP/assets"
+
+      - name: Write release notes
+        run: |
+          re="^Merge branch '(.+)' into $TARGET\$"
+          c=$SHA
+          branches=""
+          while subject=$(git log -1 --format=%s "$c") && [[ $subject =~ $re ]]; do
+            tip=$(git rev-parse "$c^2")
+            branches="- [\`${BASH_REMATCH[1]}\`]($GITHUB_SERVER_URL/$GITHUB_REPOSITORY/commit/$tip) @ \`${tip:0:8}\`: $(git log -1 --format=%s "$tip")"$'\n'"$branches"
+            c=$(git rev-parse "$c^1")
+          done
+          upstream=${UPSTREAM_URL%.git}
+          {
+            echo "Automated build of [\`$TARGET\`]($GITHUB_SERVER_URL/$GITHUB_REPOSITORY/tree/$TAG) at \`${SHA:0:8}\`: Special K $VERSION."
+            echo
+            echo "**Base:** [${upstream#https://github.com/}]($upstream) \`$UPSTREAM_BRANCH\` @ [\`$(git rev-parse --short=8 "$c")\`]($upstream/commit/$(git rev-parse "$c")): $(git log -1 --format=%s "$c")"
+            echo
+            echo "**Branches merged, in order:**"
+            echo
+            printf '%s' "$branches"
+            echo
+            echo "**Downloads:** \`$NAME.zip\` holds the 32-bit and 64-bit DLLs; \`${NAME}_debug_symbols.zip\` holds the matching PDBs."
+          } | tee "$RUNNER_TEMP/notes.md"
+
+      # A forced run of an already released build replaces its assets and notes.
+      - name: Publish
+        run: |
+          if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" > /dev/null 2>&1; then
+            gh release upload "$TAG" "$RUNNER_TEMP"/assets/*.zip --clobber --repo "$GITHUB_REPOSITORY"
+            gh release edit   "$TAG" --notes-file "$RUNNER_TEMP/notes.md" --repo "$GITHUB_REPOSITORY"
+          else
+            gh release create "$TAG" "$RUNNER_TEMP"/assets/*.zip \
+              --repo "$GITHUB_REPOSITORY" --target "$SHA" --latest \
+              --title "Special K combined $VERSION (${SHA:0:8})" \
+              --notes-file "$RUNNER_TEMP/notes.md"
+          fi
+          url=$(gh release view "$TAG" --repo "$GITHUB_REPOSITORY" --json url --jq .url)
+          echo "::notice title=Released::$url"
+          {
+            echo "### 🚀 Released"
+            echo "[$TAG]($url)"
+          } >> "$GITHUB_STEP_SUMMARY"
