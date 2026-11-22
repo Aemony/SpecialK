@@ -20,6 +20,10 @@ env:
   UPSTREAM_URL: https://github.com/SpecialKO/SpecialK.git
   UPSTREAM_BRANCH: main
   TARGET: combined
+  # What the builds of combined are called, in releases and inside the DLLs.
+  PRODUCT: Frosted K         # release titles and the DLL version string
+  SLUG: FrostedK             # file names
+  TAG_PREFIX: frostedk       # release tags: frostedk-<sha8>
 
 jobs:
   rebuild:
@@ -74,7 +78,7 @@ jobs:
           path: ${{ runner.temp }}/inputs.txt
           key: ${{ steps.fp.outputs.key }}
 
-      # Every build of combined is released under the tag combined-<sha8>. If the
+      # Every build of combined is released under the tag frostedk-<sha8>. If the
       # current combined already has one, link to it instead of building again.
       - name: Look for an existing release
         id: release
@@ -88,7 +92,7 @@ jobs:
             echo "There is no $TARGET branch yet."
             exit 0
           fi
-          tag="$TARGET-${sha:0:8}"
+          tag="$TAG_PREFIX-${sha:0:8}"
           echo "sha=$sha" >> "$GITHUB_OUTPUT"
           echo "tag=$tag" >> "$GITHUB_OUTPUT"
 
@@ -122,6 +126,43 @@ jobs:
       - uses: actions/checkout@v4
         with:
           ref: ${{ needs.rebuild.outputs.sha }}
+
+      # Marks the DLLs as Frosted K builds, in the working copy only (combined
+      # itself is never changed): the version string becomes e.g.
+      #   26.11.4.1 (Frosted K 491bf1c7)
+      # which Special K shows in its overlay, control panel, log and INI, and
+      # which Explorer and SKIF show as the DLL's version. SKIF compares versions
+      # by the leading digits of each dot-separated part, so the suffix must not
+      # contain a dot. ProductName stays "Special K": SKIF only recognises a DLL
+      # whose ProductName contains that. The numeric FILEVERSION is unchanged.
+      - name: Stamp the version as ${{ env.PRODUCT }}
+        shell: pwsh
+        env:
+          SHA: ${{ needs.rebuild.outputs.sha }}
+        run: |
+          $Utf8Bom = [Text.UTF8Encoding]::new($true)
+          $Suffix  = " ($env:PRODUCT $($env:SHA.Substring(0, 8)))"
+
+          $File = 'include\SpecialK\DLL_VERSION.H'
+          $Text = [IO.File]::ReadAllText($File)
+          $Rx   = [regex]'(?m)^(#define[ \t]+SK_VERSION_STR_A[ \t]+.*?)[ \t]*(\r?)$'
+          $Hits = $Rx.Matches($Text).Count
+          if ($Hits -eq 0) { throw "No '#define SK_VERSION_STR_A' found in $File; upstream changed how the version is defined." }
+          $Text = $Rx.Replace($Text, { param($m) "$($m.Groups[1].Value) `"$Suffix`"$($m.Groups[2].Value)" })
+          [IO.File]::WriteAllText($File, $Text, $Utf8Bom)
+          Write-Host "Stamped $Hits definition(s) in ${File}:"
+          Select-String -Path $File -Pattern 'SK_VERSION_STR_A' | ForEach-Object { Write-Host "  $($_.Line)" }
+
+          $File = 'resource\Resource.rc'
+          $Text = [IO.File]::ReadAllText($File)
+          $Old  = '"Special K Modding System"'
+          if ($Text.Contains($Old)) {
+            $Text = $Text.Replace($Old, "`"Special K Modding System ($env:PRODUCT, unofficial build)`"")
+            [IO.File]::WriteAllText($File, $Text, $Utf8Bom)
+            Write-Host "Updated FileDescription in $File"
+          } else {
+            Write-Host "::warning::FileDescription $Old not found in $File; left as is."
+          }
 
       - uses: SpecialKO/GA-setup-cpp-n20@master
       - uses: microsoft/setup-msbuild@v2
@@ -169,9 +210,9 @@ jobs:
         run: |
           $Dll = Get-Item ".\Builds\SpecialK64.dll", ".\Builds\SpecialK*.dll" -ErrorAction SilentlyContinue | Select-Object -First 1
           $Version = if ($Dll) { $Dll.VersionInfo.ProductVersion } else { $null }
-          If ([string]::IsNullOrWhiteSpace($Version)) { $Version = "unknown" }
-          $Version = $Version.Trim()
-          $Name = "SpecialK_combined_$($Version)_$("${{ needs.rebuild.outputs.sha }}".SubString(0, 8))"
+          # Only the numbers: the stamped string ends in " (Frosted K <sha8>)".
+          $Version = if ($Version -match '^\s*(\d+(\.\d+)*)') { $Matches[1] } else { "unknown" }
+          $Name = "$($env:SLUG)_$($Version)_$("${{ needs.rebuild.outputs.sha }}".SubString(0, 8))"
           $HasSymbols = [bool](Get-ChildItem ".\Symbols\*.pdb" -ErrorAction SilentlyContinue)
           "name=$Name"       | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding UTF8 -Append
           "version=$Version" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding UTF8 -Append
@@ -239,7 +280,10 @@ jobs:
           done
           upstream=${UPSTREAM_URL%.git}
           {
-            echo "Automated build of [\`$TARGET\`]($GITHUB_SERVER_URL/$GITHUB_REPOSITORY/tree/$TAG) at \`${SHA:0:8}\`: Special K $VERSION."
+            echo "> [!WARNING]"
+            echo "> **$PRODUCT is an unofficial build of Special K**, with the changes below that are not (or not yet) part of Special K. It is not made or supported by the Special K team. Please report problems [here]($GITHUB_SERVER_URL/$GITHUB_REPOSITORY/issues), not on the Special K Discord, forums or issue tracker."
+            echo
+            echo "$PRODUCT $VERSION, built from [\`$TARGET\`]($GITHUB_SERVER_URL/$GITHUB_REPOSITORY/tree/$TAG) at \`${SHA:0:8}\`. In game it reports itself as \`Special K v $VERSION ($PRODUCT ${SHA:0:8})\`."
             echo
             echo "**Base:** [${upstream#https://github.com/}]($upstream) \`$UPSTREAM_BRANCH\` @ [\`$(git rev-parse --short=8 "$c")\`]($upstream/commit/$(git rev-parse "$c")): $(git log -1 --format=%s "$c")"
             echo
@@ -259,7 +303,7 @@ jobs:
           else
             gh release create "$TAG" "$RUNNER_TEMP"/assets/*.zip \
               --repo "$GITHUB_REPOSITORY" --target "$SHA" --latest \
-              --title "Special K combined $VERSION (${SHA:0:8})" \
+              --title "$PRODUCT $VERSION (${SHA:0:8})" \
               --notes-file "$RUNNER_TEMP/notes.md"
           fi
           url=$(gh release view "$TAG" --repo "$GITHUB_REPOSITORY" --json url --jq .url)

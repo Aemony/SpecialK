@@ -1,10 +1,65 @@
-# automation
+# Frosted K
 
-This branch holds no Special K code. It holds the GitHub Action that builds
-the **`combined`** branch: upstream
+**Frosted K** is an unofficial build of
+[Special K](https://github.com/SpecialKO/SpecialK): the latest Special K with
+this fork's own fixes and features on top, some of which may never be merged
+into Special K itself. Special K, with frosting.
+
+> [!WARNING]
+> Frosted K is **not made or supported by the Special K team**. If something
+> breaks while using it, please report it [here](../../issues), not on the
+> Special K Discord, forums or issue tracker. Report a problem to Special K
+> only if it also happens with an official Special K build.
+
+## Download
+
+Get the latest build from [**Releases**](../../releases/latest). Each release
+has two files:
+
+- `FrostedK_<version>_<build>.zip`: `SpecialK64.dll` and `SpecialK32.dll`.
+- `FrostedK_<version>_<build>_debug_symbols.zip`: the matching PDBs, only
+  needed for debugging crashes.
+
+Each release's notes list the Special K version it's based on and every change
+it adds. A new build is published automatically, usually within an hour,
+whenever Special K or one of the changes is updated.
+
+## Installing
+
+The DLLs work like Special K's own, and keep the same file names, so use them
+however you use Special K. Local injection is the simplest: copy the DLL that
+matches the game into the game's folder, renamed to the API it hooks (for
+example `dxgi.dll` or `d3d11.dll`).
+
+If you replace the DLLs of a global (SKIF) install instead, keep in mind that
+SKIF's updater may replace them with an official build once a newer Special K
+version comes out.
+
+## Telling builds apart
+
+Frosted K identifies itself everywhere Special K shows its version: the
+overlay, the control panel, `SpecialK.log` and the INI. For example:
+
+```
+Special K v 26.11.4.1 (Frosted K 491bf1c7)
+```
+
+The first part is the Special K version it's based on, and the last part is
+the build. The DLL's *Details* tab in Explorer shows the same version, and the
+description *Special K Modding System (Frosted K, unofficial build)*.
+
+---
+
+# How Frosted K is built
+
+The rest of this page is for the maintainer.
+
+This branch, `automation`, holds no Special K code. It holds the GitHub Action
+that builds the **`combined`** branch, which is upstream
 [SpecialKO/SpecialK](https://github.com/SpecialKO/SpecialK) `main` with every
 branch of this fork merged on top, in alphabetical order, except the ones
-excluded in [`exclude.txt`](exclude.txt).
+excluded in [`exclude.txt`](exclude.txt). The Action then compiles `combined`
+and publishes it as Frosted K.
 
 `combined` is rebuilt from scratch and force-pushed every time, so never
 commit to it. Fix things on the source branch they belong to.
@@ -12,7 +67,7 @@ commit to it. Fix things on the source branch they belong to.
 ## When it runs
 
 - **Every hour.** The run only fingerprints its inputs: upstream `main`, each
-  listed branch and this branch. It rebuilds only when one of them has
+  included branch and this branch. It rebuilds only when one of them has
   changed, and it pushes only when the resulting content differs from
   `combined`.
 - **On demand.** Go to *Actions → Rebuild combined → Run workflow*. Tick
@@ -24,12 +79,24 @@ because the Action fetches upstream directly.
 ## Releases
 
 Every build of `combined` is compiled (Release, x64 and Win32) and published as
-a GitHub **Release** tagged `combined-<sha8>`, marked as the latest release.
-It has two downloads: `SpecialK_combined_<version>_<sha8>.zip` with the DLLs,
-and `..._debug_symbols.zip` with the PDBs. The release notes list the upstream
-commit it's based on and every merged branch with its commit. The same files
-are also attached to the workflow run as artifacts.
+a GitHub **Release** tagged `frostedk-<sha8>`, titled *Frosted K
+&lt;version&gt; (&lt;sha8&gt;)* and marked as the latest release. The same
+files are also attached to the workflow run as artifacts.
 
+The name is set at the top of the
+[workflow](.github/workflows/rebuild-combined.yml), with `PRODUCT` (titles and
+the version string), `SLUG` (file names) and `TAG_PREFIX` (tags).
+
+- **Version stamp:** before compiling, the Action appends
+  ` (Frosted K <sha8>)` to `SK_VERSION_STR_A` in
+  `include/SpecialK/DLL_VERSION.H`, and marks `FileDescription` in
+  `resource/Resource.rc` as unofficial. It changes only the build's working
+  copy, never `combined` or any branch. The numeric file version and the
+  `ProductName` ("Special K") stay unchanged, because SKIF only recognizes a
+  DLL whose product name contains "Special K". The suffix also must not contain
+  a dot, because SKIF compares versions by the leading digits of each
+  dot-separated part. If upstream ever stops defining `SK_VERSION_STR_A` that
+  way, the build fails at this step instead of shipping an unmarked DLL.
 - **Already released:** when a run finds that the current `combined` already
   has a release, it builds nothing. The run instead shows a notice and a
   summary that link to that release.
@@ -42,6 +109,8 @@ are also attached to the workflow run as artifacts.
 
 The tags keep each released `combined` commit available, even after `combined`
 itself has been rebuilt. Delete old releases and their tags whenever you like.
+Releases tagged `combined-<sha8>` are from before the Frosted K name.
+
 The fork's own *Builds* workflow does not run for `combined`, because pushes
 made by an Action never trigger other workflows.
 
