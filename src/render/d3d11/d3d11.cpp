@@ -8170,6 +8170,65 @@ SK_D3D11_IsFeatureLevelSufficient ( D3D_FEATURE_LEVEL   FeatureLevelSupported,
 //     device has ever been created.
 bool SK_NV_D3D11_HasInteropDevice = false;
 
+// Instead of only reporting that D3D10 is unsupported, offer to turn on the
+//   experimental support (once per process; the runtime may create more than
+//     one device, and both device and SwapChain creation call this).
+//
+//   Called from D3D11CreateDeviceAndSwapChain_Detour (...) when it catches the
+//     D3D10 runtime creating its device, and when SK wraps a D3D10 SwapChain
+//       (imgui_d3d10.cpp), because the device is often created before SK's
+//         deferred D3D11 hooks are enabled (DMC4 Special Edition, 32-bit) and
+//           the 64-bit runtimes never call the D3D11 export at all.
+//
+//   lMaxLiveSwapChains: how many wrapped SwapChains may already exist (the
+//     caller's own included); keeps the prompt from appearing mid-game.
+void
+SK_D3D10_OfferExperimentalSupport (bool bD3D10_1, LONG lMaxLiveSwapChains)
+{
+  // Ask once per game, not per launch: the answer is stored as
+  //   ExperimentalD3D10 = 1 / 0; only -1 (the default) asks
+  if (config.apis.d3d10.setting != SK_NoPreference)
+    return;
+
+  // dxdiag tests D3D10 in-process; not a game
+  if (SK_GetModuleHandleW (L"dxdiagn.dll") != nullptr)
+    return;
+
+  extern volatile LONG SK_DXGI_LiveWrappedSwapChains;
+  extern volatile LONG SK_DXGI_LiveWrappedSwapChain1s;
+
+  if ( ReadAcquire (&SK_DXGI_LiveWrappedSwapChains) +
+       ReadAcquire (&SK_DXGI_LiveWrappedSwapChain1s) > lMaxLiveSwapChains )
+    return;
+
+  static volatile LONG asked = FALSE;
+
+  if (InterlockedExchange (&asked, TRUE))
+    return;
+
+  const wchar_t* wszAPI =
+    bD3D10_1 ? L"Direct3D 10.1" : L"Direct3D 10";
+
+  SK_LOGi0 (L"%ws game detected; asking whether to enable Experimental D3D10.", wszAPI);
+
+  const bool bEnable =
+    IDYES ==
+      SK_MessageBox ( SK_FormatStringW (
+                        L"This game uses %ws, which Special K only "
+                        L"supports experimentally.\r\n\r\n"
+                        L"Enable experimental Direct3D 10 support for this game?\r\n\r\n"
+                        L"You will not be asked again. This can be changed later with "
+                        L"ExperimentalD3D10 under [API.Hook] in the game's SpecialK.ini.", wszAPI ),
+                      SK_FormatStringW (L"%ws Game Detected", wszAPI),
+                        MB_ICONQUESTION | MB_YESNO );
+
+  config.apis.d3d10.setting = bEnable ? 1 : 0;
+  config.utility.save_async ();
+
+  SK_LOGi0 ( L"User %ws experimental D3D10 support; not asking again.",
+               bEnable ? L"enabled" : L"declined" );
+}
+
 __declspec (noinline)
 HRESULT
 WINAPI
@@ -8194,53 +8253,50 @@ D3D11CreateDeviceAndSwapChain_Detour (IDXGIAdapter          *pAdapter,
 
   bool bD3D10 = false;
 
+  // Each D3D10 runtime passes its own private flag:
+  //   d3d10.dll   (D3D10CreateDevice[AndSwapChain])   -> 0x40000000
+  //   d3d10_1.dll (D3D10CreateDevice[AndSwapChain]1)  -> 0x80000000
+  //     (seen in 32-bit DMC4 Special Edition and Mega Man X Legacy Collection 1/2;
+  //       the 64-bit runtimes on Windows 11 26300 do not call this export at all)
+  bool bD3D10_0 = false,
+       bD3D10_1 = false;
+
+  if (  FeatureLevels     == 1                      &&
+       pFeatureLevels [0] <= D3D_FEATURE_LEVEL_10_1 &&
+       (Flags == 0x40000000 || Flags == 0x80000000) )
+  {
+    const std::wstring caller =
+      SK_GetCallerName ();
+
+    bD3D10_0 = (Flags == 0x40000000 && StrStrIW (caller.c_str (), L"d3d10.dll"));
+    bD3D10_1 = (Flags == 0x80000000 && StrStrIW (caller.c_str (), L"d3d10_1.dll"));
+  }
+
   // Check for the one in a million game that's actually D3D10...
   //   the D3D10 runtime calls into D3D11, but has some quirks SK does
   //     not want to bother with...
-  if (  FeatureLevels     == 1                      &&
-       pFeatureLevels [0] <= D3D_FEATURE_LEVEL_10_1 &&
-                    Flags == 0x40000000             &&
-       StrStrIW (SK_GetCallerName ().c_str (), L"d3d10.dll"))
+  //
+  //   D3D10.1 games always went down the normal D3D11 path and still do; they
+  //     are only detected here to offer Experimental D3D10 (the overlay).
+  if (bD3D10_0 || bD3D10_1)
   {
-    bD3D10 = true;
-
-    extern volatile LONG SK_DXGI_LiveWrappedSwapChains;
-    extern volatile LONG SK_DXGI_LiveWrappedSwapChain1s;
+    bD3D10 = bD3D10_0;
 
     // Ubisoft shenanigans
-    if (SK_IsCurrentGame (SK_GAME_ID::AssassinsCreed_Odyssey) ||
-        SK_IsCurrentGame (SK_GAME_ID::FarCry3)                ||
-        SK_IsCurrentGame (SK_GAME_ID::FarCry4)                ||
-        SK_GetModuleHandleW (L"dxdiagn.dll"))
+    if (bD3D10_0 && (SK_IsCurrentGame (SK_GAME_ID::AssassinsCreed_Odyssey) ||
+                     SK_IsCurrentGame (SK_GAME_ID::FarCry3)                ||
+                     SK_IsCurrentGame (SK_GAME_ID::FarCry4)                ||
+                     SK_GetModuleHandleW (L"dxdiagn.dll")))
     {
       return E_NOTIMPL;
     }
 
     else
     {
-      // Instead of only reporting that D3D10 is unsupported, offer to turn on
-      //   the experimental support (once per process; the runtime may create
-      //     more than one device).
-      static bool asked = false;
-
-      if ( (! config.apis.d3d10.experimental) && (! std::exchange (asked, true)) &&
-           (! ( ReadAcquire (&SK_DXGI_LiveWrappedSwapChains)  > 0 ||
-                ReadAcquire (&SK_DXGI_LiveWrappedSwapChain1s) > 0 )) )
-      {
-        if ( IDYES ==
-               SK_MessageBox ( L"This game uses Direct3D 10, which Special K only "
-                               L"supports experimentally.\r\n\r\n"
-                               L"Enable experimental Direct3D 10 support for this game?\r\n\r\n"
-                               L"This can be changed later with ExperimentalD3D10 under "
-                               L"[API.Hook] in the game's SpecialK.ini.",
-                                 L"Direct3D 10 Game Detected", MB_ICONQUESTION | MB_YESNO ) )
-        {
-          config.apis.d3d10.experimental = true;
-          config.utility.save_async ();
-
-          SK_LOGi0 (L"User enabled experimental D3D10 support.");
-        }
-      }
+      // Often not reached: the game may create its device before SK's
+      //   deferred D3D11 hooks are enabled, and then only its SwapChain is
+      //     seen, so wrapping a D3D10 SwapChain offers it as well.
+      SK_D3D10_OfferExperimentalSupport (bD3D10_1, 0);
 
       // Experimental: let the D3D10 runtime's internal D3D11 device go through
       //   the normal D3D11 path instead of bailing out.
@@ -8248,15 +8304,15 @@ D3D11CreateDeviceAndSwapChain_Detour (IDXGIAdapter          *pAdapter,
       //   NOTE: Not reached on Windows 11 26300 in the test app; there d3d10.dll
       //           does not call this export, its SwapChain arrives via the
       //             IDXGIFactory hooks. Some games do reach it, though.
-      if (config.apis.d3d10.experimental)
+      if (config.apis.d3d10.enabled ())
       {
-        SK_LOGi0 ( L"D3D10 runtime is creating a D3D11 device (Flags=0x%x, "
+        SK_LOGi0 ( L"%ws runtime is creating a D3D11 device (Flags=0x%x, "
                    L"FeatureLevel=0x%x, SwapChain=%s); handling it as D3D11...",
-                     Flags, pFeatureLevels [0],
+                     bD3D10_1 ? L"D3D10.1" : L"D3D10", Flags, pFeatureLevels [0],
                        pSwapChainDesc != nullptr ? L"Yes" : L"No" );
 
-        // Flags (0x40000000) is the runtime's private "D3D10 device" flag,
-        //   it MUST be passed through or the device won't expose ID3D10Device.
+        // Flags (0x40000000 / 0x80000000) is the runtime's private "D3D10 device"
+        //   flag, it MUST be passed through or the device won't expose ID3D10Device.
         bD3D10 = false;
       }
     }

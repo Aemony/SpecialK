@@ -37,6 +37,10 @@ interface ID3D12Device;
 //   Experimental D3D10 (the overlay) is enabled
 bool SK_D3D10_SwapChainUsesD3D10 (IDXGISwapChain* pSwapChain);
 
+// imgui_d3d10.cpp: asks once whether to enable Experimental D3D10 (the overlay),
+//   if this D3D10 SwapChain is the first one SK wraps
+void SK_D3D10_OfferExperimentalSupport (IDXGISwapChain* pSwapChain);
+
 #ifndef __SK_SUBSYSTEM__
 #define __SK_SUBSYSTEM__ L"IDXGI Wrap"
 #endif
@@ -156,7 +160,12 @@ IWrapDXGISwapChain : IDXGISwapChain4
 
     // Lets per-Present D3D10 work bail out early when no D3D10 SwapChain exists
     if (d3d10_)
+    {
       InterlockedIncrement (&SK_DXGI_LiveWrappedD3D10SwapChains);
+
+      // Device creation is often missed (see D3D11CreateDeviceAndSwapChain_Detour)
+      SK_D3D10_OfferExperimentalSupport (pReal);
+    }
 
     flip_model.active =
       ( sd.SwapEffect == DXGI_SWAP_EFFECT_FLIP_DISCARD ||
@@ -290,7 +299,12 @@ IWrapDXGISwapChain : IDXGISwapChain4
 
     // Lets per-Present D3D10 work bail out early when no D3D10 SwapChain exists
     if (d3d10_)
+    {
       InterlockedIncrement (&SK_DXGI_LiveWrappedD3D10SwapChains);
+
+      // Device creation is often missed (see D3D11CreateDeviceAndSwapChain_Detour)
+      SK_D3D10_OfferExperimentalSupport (pReal);
+    }
 
     flip_model.active =
       ( sd.SwapEffect == DXGI_SWAP_EFFECT_FLIP_DISCARD ||

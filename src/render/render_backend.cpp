@@ -2928,7 +2928,7 @@ SK_RenderBackend_V2::updateActiveAPI (SK_RenderAPI _api)
               // imgui_d3d10.cpp: L"D3D10.1" or L"D3D10"
               extern const wchar_t* SK_D3D10_GetAPIName (IDXGISwapChain* pSwapChain);
 
-              if (       config.apis.d3d10.experimental && pSwapChain != nullptr &&
+              if (       config.apis.d3d10.enabled () && pSwapChain != nullptr &&
                          SUCCEEDED (pSwapChain->GetDevice (__uuidof (ID3D10Device), (void **)&pTest))) {
                 const wchar_t* wszAPI = SK_D3D10_GetAPIName (pSwapChain);
                 wcsncpy (name, wcscmp (wszAPI, L"D3D10") == 0 ? L"D3D10 " : wszAPI, 8);

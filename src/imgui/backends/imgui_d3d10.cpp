@@ -283,7 +283,7 @@ ImGui_ImplDX10_InvalidateDeviceObjects (void)
   } while (0)
 
 // Like SK_D3D10_IsD3D10SwapChain (...), but without logging and regardless of
-//   config.apis.d3d10.experimental: that setting only turns on the overlay, while
+//   ExperimentalD3D10: that setting only turns on the overlay, while
 //     the Flip Model fixes keyed off this test are needed by every D3D10 game whose
 //       SwapChain SK wraps (Shattered Horizon crashed creating an RTV on the emulated
 //         D3D11 backbuffer with the setting off). Used when wrapping every SwapChain.
@@ -302,7 +302,7 @@ SK_D3D10_SwapChainUsesD3D10 (IDXGISwapChain* pSwapChain)
 bool
 SK_D3D10_IsD3D10SwapChain (IDXGISwapChain* pSwapChain)
 {
-  if (! config.apis.d3d10.experimental || pSwapChain == nullptr)
+  if (! config.apis.d3d10.enabled () || pSwapChain == nullptr)
     return false;
 
   SK_ComPtr <ID3D10Device> pDev10;
@@ -344,6 +344,25 @@ SK_D3D10_IsD3D10_1Device (ID3D10Device1* pDev1, D3D10_FEATURE_LEVEL1* pLevel = n
     ( level != D3D10_FEATURE_LEVEL_10_0 ) ||
     ( SK_GetModuleHandleW (L"d3d10_1.dll") != nullptr &&
       SK_GetModuleHandleW (L"d3d10.dll")   == nullptr );
+}
+
+// IWrapDXGISwapChain constructors, for SwapChains of D3D10 devices: offer
+//   Experimental D3D10 if this is the first SwapChain SK wraps (d3d11.cpp)
+void
+SK_D3D10_OfferExperimentalSupport (IDXGISwapChain* pSwapChain)
+{
+  extern void SK_D3D10_OfferExperimentalSupport (bool bD3D10_1, LONG lMaxLiveSwapChains);
+
+  if (config.apis.d3d10.setting != SK_NoPreference || pSwapChain == nullptr)
+    return;
+
+  SK_ComPtr <ID3D10Device1> pDev1;
+
+  if (FAILED (pSwapChain->GetDevice (__uuidof (ID3D10Device1), (void **)&pDev1.p)))
+    return;
+
+  // The constructor has already counted this SwapChain
+  SK_D3D10_OfferExperimentalSupport (SK_D3D10_IsD3D10_1Device (pDev1), 1);
 }
 
 const wchar_t*

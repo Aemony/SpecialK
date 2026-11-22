@@ -1389,7 +1389,7 @@ struct {
     sk::ParameterInt*     enable                  = nullptr;
   }   dxvk9;
 
-  sk::ParameterBool*      experimental_d3d10      = nullptr;
+  sk::ParameterInt*       experimental_d3d10      = nullptr;
 
   sk::ParameterInt*       last_known              = nullptr;
 } apis;
@@ -4833,7 +4833,8 @@ auto DeclKeybind =
         config.apis.dxgi.d3d11.hook = true;
   }
 
-  apis.experimental_d3d10->load (config.apis.d3d10.experimental);
+  // -1 = ask, 0 = off, 1 = on; older INIs hold true / false, read as 1 / 0
+  apis.experimental_d3d10->load (config.apis.d3d10.setting);
 
   if (! apis.OpenGL.hook->load (config.apis.OpenGL.hook))
     config.apis.OpenGL.hook = true;
@@ -7200,7 +7201,7 @@ SK_SaveConfig ( std::wstring name,
   apis.dxvk9.enable->store                    (config.apis.d3d9.native_dxvk);
   apis.d3d11.hook->store                      (config.apis.dxgi.d3d11.hook);
   apis.d3d12.hook->store                      (config.apis.dxgi.d3d12.hook);
-  apis.experimental_d3d10->store              (config.apis.d3d10.experimental);
+  apis.experimental_d3d10->store              (config.apis.d3d10.setting);
   apis.OpenGL.hook->store                     (config.apis.OpenGL.hook);
 #ifdef _M_AMD64
   if (config.apis.Vulkan.hook_next != SK_NoPreference) config.apis.Vulkan.hook = config.apis.Vulkan.hook_next != 0;

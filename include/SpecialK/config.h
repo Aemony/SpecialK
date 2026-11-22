@@ -1493,7 +1493,12 @@ struct sk_config_t
     } dxgi;
 
     struct d3d10_s {
-      bool   experimental = false; // Hook D3D10 through its internal D3D11 device
+      // ExperimentalD3D10: -1 (SK_NoPreference) = ask once ("Game Detected"
+      //   prompt, the answer is stored), 0 = off, 1 = on (hook D3D10 through
+      //     its internal D3D11 device and draw the D3D10 overlay)
+      int    setting      = SK_NoPreference;
+
+      bool   enabled (void) const noexcept { return setting == 1; }
     } d3d10;
 
     struct khronos_s {
