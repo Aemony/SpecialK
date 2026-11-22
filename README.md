@@ -5,12 +5,6 @@
 this fork's own fixes and features on top, some of which may never be merged
 into Special K itself. Special K, with frosting.
 
-> [!WARNING]
-> Frosted K is **not made or supported by the Special K team**. If something
-> breaks while using it, please report it [here](../../issues), not on the
-> Special K Discord, forums or issue tracker. Report a problem to Special K
-> only if it also happens with an official Special K build.
-
 ## Download
 
 Get the latest build from [**Releases**](../../releases/latest). Each release
