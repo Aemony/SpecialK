@@ -1998,6 +1998,7 @@ enum class SK_GAME_ID
   CONTROL_Resonant,             // CONTROLResonant.exe
   Helldivers2,                  // Helldivers2.exe
   EarthDefenseForce41,          // EDF41.exe
+  PrinceOfPersia_2008,          // PrinceOfPersia_Launcher.exe (the game itself, not a launcher)
 
   UNKNOWN_GAME               = 0xffff
 };
