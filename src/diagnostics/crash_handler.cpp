@@ -1639,13 +1639,21 @@ SK_TopLevelExceptionFilter ( _In_ struct _EXCEPTION_POINTERS *ExceptionInfo )
 #  define _IP_TEXT "EIP"
 #endif
 
-  bool first_time_for_tid =
-    ( pTLS == nullptr ||
-      pTLS->debug.last_ctx._IP == 0 );
+  // Without thread-local storage, the history has to be shared by all threads;
+  //   that is imprecise, but with no history at all an exception that keeps
+  //     happening would never be recognized as a repeat, and would be retried
+  //       (and written to the log) forever.
+  static CONTEXT          dummy_ctx = { };
+  static EXCEPTION_RECORD dummy_exc = { };
+  static LONG             dummy_seq =  0 ;
 
-  CONTEXT          dummy_ctx = { };
-  EXCEPTION_RECORD dummy_exc = { };
-  LONG             dummy_seq =  0 ;
+  // The exception code is what says whether anything was recorded, the
+  //   instruction pointer cannot be used for that; it is legitimately zero
+  //     when the fault is a call through a null function pointer, and that
+  //       exception would look like the thread's first every time.
+  bool first_time_for_tid =
+    ( pTLS != nullptr ? pTLS->debug.last_exc.ExceptionCode == 0
+                      :            dummy_exc.ExceptionCode == 0 );
 
   auto& last_ctx        = pTLS != nullptr ? pTLS->debug.last_ctx          : dummy_ctx;
   auto& last_exc        = pTLS != nullptr ? pTLS->debug.last_exc          : dummy_exc;
