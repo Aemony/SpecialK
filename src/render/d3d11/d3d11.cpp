@@ -8216,11 +8216,49 @@ D3D11CreateDeviceAndSwapChain_Detour (IDXGIAdapter          *pAdapter,
       return E_NOTIMPL;
     }
 
-    else if (! ( ReadAcquire (&SK_DXGI_LiveWrappedSwapChains)  > 0 ||
-                 ReadAcquire (&SK_DXGI_LiveWrappedSwapChain1s) > 0 ) )
+    else
     {
-      SK_MessageBox ( L"Special K does not support Direct3D 10",
-                      L"Incompatible Game", MB_ICONERROR | MB_OK );
+      // Instead of only reporting that D3D10 is unsupported, offer to turn on
+      //   the experimental support (once per process; the runtime may create
+      //     more than one device).
+      static bool asked = false;
+
+      if ( (! config.apis.d3d10.experimental) && (! std::exchange (asked, true)) &&
+           (! ( ReadAcquire (&SK_DXGI_LiveWrappedSwapChains)  > 0 ||
+                ReadAcquire (&SK_DXGI_LiveWrappedSwapChain1s) > 0 )) )
+      {
+        if ( IDYES ==
+               SK_MessageBox ( L"This game uses Direct3D 10, which Special K only "
+                               L"supports experimentally.\r\n\r\n"
+                               L"Enable experimental Direct3D 10 support for this game?\r\n\r\n"
+                               L"This can be changed later with ExperimentalD3D10 under "
+                               L"[API.Hook] in the game's SpecialK.ini.",
+                                 L"Direct3D 10 Game Detected", MB_ICONQUESTION | MB_YESNO ) )
+        {
+          config.apis.d3d10.experimental = true;
+          config.utility.save_async ();
+
+          SK_LOGi0 (L"User enabled experimental D3D10 support.");
+        }
+      }
+
+      // Experimental: let the D3D10 runtime's internal D3D11 device go through
+      //   the normal D3D11 path instead of bailing out.
+      //
+      //   NOTE: Not reached on Windows 11 26300 in the test app; there d3d10.dll
+      //           does not call this export, its SwapChain arrives via the
+      //             IDXGIFactory hooks. Some games do reach it, though.
+      if (config.apis.d3d10.experimental)
+      {
+        SK_LOGi0 ( L"D3D10 runtime is creating a D3D11 device (Flags=0x%x, "
+                   L"FeatureLevel=0x%x, SwapChain=%s); handling it as D3D11...",
+                     Flags, pFeatureLevels [0],
+                       pSwapChainDesc != nullptr ? L"Yes" : L"No" );
+
+        // Flags (0x40000000) is the runtime's private "D3D10 device" flag,
+        //   it MUST be passed through or the device won't expose ID3D10Device.
+        bD3D10 = false;
+      }
     }
   }
 

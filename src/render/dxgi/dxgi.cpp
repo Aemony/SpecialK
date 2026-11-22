@@ -40,6 +40,7 @@
 
 #include <imgui/backends/imgui_d3d11.h>
 #include <imgui/backends/imgui_d3d12.h>
+#include <imgui/backends/imgui_d3d10.h>
 
 #include <imgui/font_awesome.h>
 
@@ -3550,6 +3551,10 @@ SK_DXGI_PresentBase ( IDXGISwapChain         *This,
       SK::Framerate::TickEx (false, 0.0, { 0,0 }, rb.swapchain.p);
     }
 
+    // D3D10 games expect their render targets to stay bound across Present
+    SK_D3D10_FlipModelRebind
+      d3d10_rebind (This);
+
     HRESULT hr =
       _SkipThisFrame ? _Present ( rb.d3d11.immediate_ctx != nullptr ?
                                                                   0 : 1,
@@ -3557,6 +3562,8 @@ SK_DXGI_PresentBase ( IDXGISwapChain         *This,
                                 ( ( rb.d3d11.immediate_ctx != nullptr) ? DXGI_PRESENT_ALLOW_TEARING
                                                                        : 0 ) ) :
                        _Present ( interval, flags );
+
+    d3d10_rebind.restore ();
 
     if (_SkipThisFrame)
       hr = S_OK;
@@ -5161,6 +5168,45 @@ SK_DXGI_CreateSwapChain_PreInit (
 {
   auto& rb =
     SK_GetCurrentRenderBackend ();
+
+  // D3D10: Flip Model cannot be multisampled, and SK emulates MSAA
+  //   for such games with a D3D11 resolve at Present. D3D10 devices silently
+  //     discard D3D11 commands, so the game would get a single-sampled backbuffer
+  //       and fail to create its MSAA render target view. Keep this SwapChain on
+  //         Blt Model instead (only for this call; the config is not changed).
+  struct flip_override_restore_s {
+    bool discard, sequential, active = false;
+   ~flip_override_restore_s (void) {
+      if (active) {
+        config.render.framerate.flip_discard    = discard;
+        config.render.framerate.flip_sequential = sequential;
+      }
+    }
+  } flip_restore { config.render.framerate.flip_discard,
+                   config.render.framerate.flip_sequential };
+
+  //   This applies whether or not Experimental D3D10 (the overlay) is enabled.
+  if (pDevice != nullptr &&
+      config.render.framerate.flip_discard  && config.render.dxgi.msaa_samples <= 0)
+  {
+    const UINT samples =
+      pDesc  != nullptr ? pDesc ->SampleDesc.Count :
+      pDesc1 != nullptr ? pDesc1->SampleDesc.Count : 1;
+
+    SK_ComPtr <ID3D10Device> pDev10;
+
+    if ( samples > 1 &&
+         SUCCEEDED (pDevice->QueryInterface (__uuidof (ID3D10Device), (void **)&pDev10.p)) )
+    {
+      SK_LOGi0 ( L" >> D3D10 SwapChain uses %ux MSAA; not applying Flip Model override.",
+                   samples );
+
+      flip_restore.active                     = true;
+      config.render.framerate.flip_discard    = false;
+      config.render.framerate.flip_sequential = false;
+      rb.active_traits.bFlipMode              = false;
+    }
+  }
 
   // Move the window to the origin of the user-forced monitor...
   //

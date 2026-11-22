@@ -2505,6 +2505,9 @@ D3D9Reset_Pre ( IDirect3DDevice9      *This,
   }
 }
 
+static bool
+SK_D3D9_CanClaimRenderBackend (const SK_RenderBackend& rb);
+
 __declspec (noinline)
 void
 STDMETHODCALLTYPE
@@ -2514,8 +2517,14 @@ D3D9Reset_Post ( IDirect3DDevice9      *This,
 {
   UNREFERENCED_PARAMETER (pFullscreenDisplayMode);
 
-  if ( SK_GetCurrentRenderBackend ().device        == nullptr ||
-       SK_GetCurrentRenderBackend ().device.IsEqualObject (This) )
+  auto& rb =
+    SK_GetCurrentRenderBackend ();
+
+  // A D3D9 device that cannot become the render device (e.g. a video device
+  //   in a game that renders through DXGI) must neither initialize the D3D9
+  //     overlay nor be recorded as the render device.
+  if ( (rb.device == nullptr && SK_D3D9_CanClaimRenderBackend (rb)) ||
+        rb.device.IsEqualObject (This) )
   {
     if (ImGui_ImplDX9_Init ( (void *)pPresentationParameters->hDeviceWindow,
                                This,
@@ -2527,11 +2536,9 @@ D3D9Reset_Post ( IDirect3DDevice9      *This,
     trigger_reset       = reset_stage_e::Clear;
     request_mode_change = mode_change_request_e::None;
 
-    if ( SK_GetCurrentRenderBackend ().api == SK_RenderAPI::D3D9   ||
-         SK_GetCurrentRenderBackend ().api == SK_RenderAPI::D3D9Ex ||
-         SK_GetCurrentRenderBackend ().api == SK_RenderAPI::Reserved )
+    if (SK_D3D9_CanClaimRenderBackend (rb))
     {
-      SK_GetCurrentRenderBackend ().device = This;
+      rb.device = This;
     }
   }
 }
@@ -3908,6 +3915,38 @@ SK_DiscontEpsilon (int x1, int x2, int tolerance)
   return false;
 }
 
+extern volatile LONG SK_DXGI_LiveWrappedSwapChains;
+extern volatile LONG SK_DXGI_LiveWrappedSwapChain1s;
+
+// A game that renders through DXGI (D3D10/11) may create a D3D9(Ex) device on
+//   the same window (video playback, D3D9Ex interop) before its first DXGI
+//     Present, while rb.api is still Reserved. If that device is claimed as the
+//       render device, the first DXGI Present never sets up the D3D11 context
+//         and the overlay never draws (or even processes input).
+static bool
+SK_D3D9_CanClaimRenderBackend (const SK_RenderBackend& rb)
+{
+  if (rb.api == SK_RenderAPI::D3D9 || rb.api == SK_RenderAPI::D3D9Ex)
+    return true;
+
+  if (rb.api != SK_RenderAPI::Reserved)
+    return false;
+
+  const bool dxgi_swapchain_exists =
+    ( ReadAcquire (&SK_DXGI_LiveWrappedSwapChains)  +
+      ReadAcquire (&SK_DXGI_LiveWrappedSwapChain1s) ) > 0;
+
+  if (dxgi_swapchain_exists)
+  {
+    SK_RunOnce (
+      SK_LOGs0 ( L"   D3D9   ",
+                 L"Not claiming D3D9 device as the render device; a DXGI SwapChain already exists." )
+    );
+  }
+
+  return (! dxgi_swapchain_exists);
+}
+
 __declspec (noinline)
 D3DPRESENT_PARAMETERS*
 WINAPI
@@ -3985,9 +4024,7 @@ SK_SetPresentParamsD3D9Ex ( IDirect3DDevice9       *pDevice,
         pparams->BackBufferHeight = config.window.res.override.y;
       }
 
-      if ( rb.api == SK_RenderAPI::D3D9   ||
-           rb.api == SK_RenderAPI::D3D9Ex ||
-           rb.api == SK_RenderAPI::Reserved )
+      if (SK_D3D9_CanClaimRenderBackend (rb))
       {
         SK_D3D9_SetFPSTarget (pparams);
 
@@ -4336,9 +4373,7 @@ SK_SetPresentParamsD3D9Ex ( IDirect3DDevice9       *pDevice,
     dll_log.Log (L"Using wrapper for SetPresentParams!");
 #endif
     // Filter out devices used only for video playback
-    if ( rb.api == SK_RenderAPI::D3D9   ||
-         rb.api == SK_RenderAPI::D3D9Ex ||
-         rb.api == SK_RenderAPI::Reserved )
+    if (SK_D3D9_CanClaimRenderBackend (rb))
     {
       rb.setDevice (pDevice);
     }

@@ -27,10 +27,15 @@
 
 extern volatile LONG SK_DXGI_LiveWrappedSwapChains;
 extern volatile LONG SK_DXGI_LiveWrappedSwapChain1s;
+extern volatile LONG SK_DXGI_LiveWrappedD3D10SwapChains; // Subset of the above
 
 interface ID3D11Device;
 interface ID3D12Device;
 #include <atlbase.h>
+
+// imgui_d3d10.cpp: true for SwapChains of D3D10 devices, whether or not
+//   Experimental D3D10 (the overlay) is enabled
+bool SK_D3D10_SwapChainUsesD3D10 (IDXGISwapChain* pSwapChain);
 
 #ifndef __SK_SUBSYSTEM__
 #define __SK_SUBSYSTEM__ L"IDXGI Wrap"
@@ -144,6 +149,14 @@ IWrapDXGISwapChain : IDXGISwapChain4
     SK_ComQIPtr <ID3D12Device>
              pDev12 ( pDevice );
     d3d12_ = pDev12.p != nullptr;
+
+    // D3D10 games render through ID3D10Device, which ignores the D3D11 copies that
+    //   Flip Model emulation relies on; see GetBuffer (...) and PresentBase (...)
+    d3d10_ = (! d3d12_) && SK_D3D10_SwapChainUsesD3D10 (pReal);
+
+    // Lets per-Present D3D10 work bail out early when no D3D10 SwapChain exists
+    if (d3d10_)
+      InterlockedIncrement (&SK_DXGI_LiveWrappedD3D10SwapChains);
 
     flip_model.active =
       ( sd.SwapEffect == DXGI_SWAP_EFFECT_FLIP_DISCARD ||
@@ -270,6 +283,14 @@ IWrapDXGISwapChain : IDXGISwapChain4
     SK_ComQIPtr <ID3D12Device>
              pDev12 ( pDevice );
     d3d12_ = pDev12.p != nullptr;
+
+    // D3D10 games render through ID3D10Device, which ignores the D3D11 copies that
+    //   Flip Model emulation relies on; see GetBuffer (...) and PresentBase (...)
+    d3d10_ = (! d3d12_) && SK_D3D10_SwapChainUsesD3D10 (pReal);
+
+    // Lets per-Present D3D10 work bail out early when no D3D10 SwapChain exists
+    if (d3d10_)
+      InterlockedIncrement (&SK_DXGI_LiveWrappedD3D10SwapChains);
 
     flip_model.active =
       ( sd.SwapEffect == DXGI_SWAP_EFFECT_FLIP_DISCARD ||
@@ -412,6 +433,7 @@ IWrapDXGISwapChain : IDXGISwapChain4
   HWND                  hWnd_           = 0;
 
   bool                  d3d12_          = false;
+  bool                  d3d10_          = false; // SwapChain of a D3D10 device
   bool                  waitable_       = false;
   ID3D12CommandQueue*   d3d12_queue_    = nullptr;
   bool                  has_extra_      = false;
