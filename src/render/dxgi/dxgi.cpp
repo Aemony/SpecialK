@@ -5195,8 +5195,12 @@ SK_DXGI_CreateSwapChain_PreInit (
 
     SK_ComPtr <ID3D10Device> pDev10;
 
+    // imgui_d3d10.cpp: a D3D11 device can answer to ID3D10Device too
+    extern bool SK_D3D10_IsD3D10RuntimeDevice (IUnknown* pDevice);
+
     if ( samples > 1 &&
-         SUCCEEDED (pDevice->QueryInterface (__uuidof (ID3D10Device), (void **)&pDev10.p)) )
+         SUCCEEDED (pDevice->QueryInterface (__uuidof (ID3D10Device), (void **)&pDev10.p)) &&
+         SK_D3D10_IsD3D10RuntimeDevice (pDev10) )
     {
       SK_LOGi0 ( L" >> D3D10 SwapChain uses %ux MSAA; not applying Flip Model override.",
                    samples );

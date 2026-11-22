@@ -287,6 +287,74 @@ ImGui_ImplDX10_InvalidateDeviceObjects (void)
 //     the Flip Model fixes keyed off this test are needed by every D3D10 game whose
 //       SwapChain SK wraps (Shattered Horizon crashed creating an RTV on the emulated
 //         D3D11 backbuffer with the setting off). Used when wrapping every SwapChain.
+// Answering to ID3D10Device does not make a device a D3D10 device. Once anything
+//   calls ID3D11Device1::CreateDeviceContextState (..., __uuidof (ID3D10Device1), ...)
+//     on a D3D11 device -- even if that call fails -- the device answers to the D3D10
+//       interfaces for good, and ID3D10Device1::GetFeatureLevel reports its D3D11
+//         feature level. Its immediate context still renders D3D11, so the D3D10
+//           overlay drawn there is never seen, and the D3D10 Flip Model handling
+//             would be applied to a D3D11 game.
+//
+//   Seen in Cities XXL (D3D11, feature level 11_0; most likely the Steam overlay
+//     makes that call): "SwapChain ... uses D3D10.1 at feature level 11_0" and
+//       no overlay with ExperimentalD3D10=1.
+//
+//   Real D3D10 games create their device through d3d10.dll or d3d10_1.dll, which
+//     cannot create feature levels above 10_1; Cities XXL loads neither.
+bool
+SK_D3D10_IsD3D10RuntimeDevice (IUnknown* pDevice)
+{
+  if (pDevice == nullptr)
+    return false;
+
+  if ( SK_GetModuleHandleW (L"d3d10.dll")   == nullptr &&
+       SK_GetModuleHandleW (L"d3d10_1.dll") == nullptr )
+    return false;
+
+  SK_ComPtr <ID3D10Device1> pDev1;
+
+  if ( SUCCEEDED (pDevice->QueryInterface (__uuidof (ID3D10Device1), (void **)&pDev1.p)) &&
+       pDev1->GetFeatureLevel () > D3D10_FEATURE_LEVEL_10_1 )
+    return false;
+
+  return true;
+}
+
+// GetDevice (ID3D10Device), but only for devices of the D3D10 runtimes (see above)
+static HRESULT
+SK_D3D10_GetSwapChainDevice (IDXGISwapChain* pSwapChain, ID3D10Device** ppDevice)
+{
+  *ppDevice = nullptr;
+
+  const HRESULT hr =
+    pSwapChain->GetDevice (__uuidof (ID3D10Device), (void **)ppDevice);
+
+  if (FAILED (hr))
+    return hr;
+
+  if (! SK_D3D10_IsD3D10RuntimeDevice (*ppDevice))
+  {
+    SK_ComPtr <ID3D10Device1> pDev1;
+    (*ppDevice)->QueryInterface (__uuidof (ID3D10Device1), (void **)&pDev1.p);
+
+    const UINT level =
+      pDev1.p != nullptr ? pDev1->GetFeatureLevel () : 0;
+
+    SK_D3D10_LOG_ONCE ( D3D11WithD3D10Interface,
+      L"SwapChain %p answers to ID3D10Device, but its device is a D3D11 device "
+      L"(feature level %d_%d, %ws); treating it as D3D11.", pSwapChain,
+        (level >> 12) & 0xF, (level >> 8) & 0xF,
+          level > D3D10_FEATURE_LEVEL_10_1 ? L"above what D3D10 can create"
+                                           : L"no D3D10 runtime loaded" );
+
+    std::exchange (*ppDevice, nullptr)->Release ();
+
+    return E_NOINTERFACE;
+  }
+
+  return hr;
+}
+
 bool
 SK_D3D10_SwapChainUsesD3D10 (IDXGISwapChain* pSwapChain)
 {
@@ -296,7 +364,7 @@ SK_D3D10_SwapChainUsesD3D10 (IDXGISwapChain* pSwapChain)
   SK_ComPtr <ID3D10Device> pDev10;
 
   return
-    SUCCEEDED (pSwapChain->GetDevice (__uuidof (ID3D10Device), (void **)&pDev10.p));
+    SUCCEEDED (SK_D3D10_GetSwapChainDevice (pSwapChain, &pDev10.p));
 }
 
 bool
@@ -308,7 +376,7 @@ SK_D3D10_IsD3D10SwapChain (IDXGISwapChain* pSwapChain)
   SK_ComPtr <ID3D10Device> pDev10;
 
   const HRESULT hr =
-    pSwapChain->GetDevice (__uuidof (ID3D10Device), (void **)&pDev10.p);
+    SK_D3D10_GetSwapChainDevice (pSwapChain, &pDev10.p);
 
   if (FAILED (hr))
   {

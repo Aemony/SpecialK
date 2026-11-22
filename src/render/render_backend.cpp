@@ -2925,11 +2925,14 @@ SK_RenderBackend_V2::updateActiveAPI (SK_RenderAPI _api)
               //   ID3D11Device -> ID3D10Device fails; ask the SwapChain instead.
               SK_ComQIPtr <IDXGISwapChain> pSwapChain (swapchain);
 
-              // imgui_d3d10.cpp: L"D3D10.1" or L"D3D10"
-              extern const wchar_t* SK_D3D10_GetAPIName (IDXGISwapChain* pSwapChain);
+              // imgui_d3d10.cpp: L"D3D10.1" or L"D3D10"; and whether the SwapChain's
+              //   device is a D3D10 device (not merely a D3D11 device that answers
+              //     to ID3D10Device, see SK_D3D10_IsD3D10RuntimeDevice)
+              extern const wchar_t* SK_D3D10_GetAPIName         (IDXGISwapChain* pSwapChain);
+              extern bool           SK_D3D10_SwapChainUsesD3D10 (IDXGISwapChain* pSwapChain);
 
               if (       config.apis.d3d10.enabled () && pSwapChain != nullptr &&
-                         SUCCEEDED (pSwapChain->GetDevice (__uuidof (ID3D10Device), (void **)&pTest))) {
+                         SK_D3D10_SwapChainUsesD3D10 (pSwapChain)) {
                 const wchar_t* wszAPI = SK_D3D10_GetAPIName (pSwapChain);
                 wcsncpy (name, wcscmp (wszAPI, L"D3D10") == 0 ? L"D3D10 " : wszAPI, 8);
               } else if (SUCCEEDED (device->QueryInterface (IID_ID3D11Device5, (void **)&pTest))) {
