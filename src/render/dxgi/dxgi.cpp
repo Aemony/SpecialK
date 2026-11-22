@@ -5169,7 +5169,7 @@ SK_DXGI_CreateSwapChain_PreInit (
   auto& rb =
     SK_GetCurrentRenderBackend ();
 
-  // Experimental D3D10: Flip Model cannot be multisampled, and SK emulates MSAA
+  // D3D10: Flip Model cannot be multisampled, and SK emulates MSAA
   //   for such games with a D3D11 resolve at Present. D3D10 devices silently
   //     discard D3D11 commands, so the game would get a single-sampled backbuffer
   //       and fail to create its MSAA render target view. Keep this SwapChain on
@@ -5185,7 +5185,8 @@ SK_DXGI_CreateSwapChain_PreInit (
   } flip_restore { config.render.framerate.flip_discard,
                    config.render.framerate.flip_sequential };
 
-  if (config.apis.d3d10.experimental && pDevice != nullptr &&
+  //   This applies whether or not Experimental D3D10 (the overlay) is enabled.
+  if (pDevice != nullptr &&
       config.render.framerate.flip_discard  && config.render.dxgi.msaa_samples <= 0)
   {
     const UINT samples =

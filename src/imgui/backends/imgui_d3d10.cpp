@@ -281,12 +281,15 @@ ImGui_ImplDX10_InvalidateDeviceObjects (void)
       SK_LOGi0 (__VA_ARGS__);                                   \
   } while (0)
 
-// Same test as SK_D3D10_IsD3D10SwapChain (...), without logging; used when
-//   wrapping every SwapChain, where D3D11 games are the expected case.
+// Like SK_D3D10_IsD3D10SwapChain (...), but without logging and regardless of
+//   config.apis.d3d10.experimental: that setting only turns on the overlay, while
+//     the Flip Model fixes keyed off this test are needed by every D3D10 game whose
+//       SwapChain SK wraps (Shattered Horizon crashed creating an RTV on the emulated
+//         D3D11 backbuffer with the setting off). Used when wrapping every SwapChain.
 bool
 SK_D3D10_SwapChainUsesD3D10 (IDXGISwapChain* pSwapChain)
 {
-  if (! config.apis.d3d10.experimental || pSwapChain == nullptr)
+  if (pSwapChain == nullptr)
     return false;
 
   SK_ComPtr <ID3D10Device> pDev10;
@@ -590,7 +593,16 @@ ImGui_ImplDX10_RenderDrawData (ImDrawData* draw_data, IDXGISwapChain* pSwapChain
 
 SK_D3D10_FlipModelRebind::SK_D3D10_FlipModelRebind (IDXGISwapChain* pSwapChain)
 {
-  if (! SK_D3D10_IsD3D10SwapChain (pSwapChain))
+  // Runs on every Present of every DXGI game; skip the GetDevice (...) query
+  //   unless SK has wrapped a D3D10 SwapChain. Only those can have been converted
+  //     to Flip Model by SK, which is the only case that needs the rebind.
+  extern volatile LONG SK_DXGI_LiveWrappedD3D10SwapChains;
+
+  if (ReadAcquire (&SK_DXGI_LiveWrappedD3D10SwapChains) == 0)
+    return;
+
+  // Needed whether or not Experimental D3D10 (the overlay) is enabled
+  if (! SK_D3D10_SwapChainUsesD3D10 (pSwapChain))
     return;
 
   DXGI_SWAP_CHAIN_DESC desc = { };

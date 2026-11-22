@@ -45,6 +45,7 @@ extern BOOL _NO_ALLOW_MODE_SWITCH;
 
 volatile LONG SK_DXGI_LiveWrappedSwapChains  = 0;
 volatile LONG SK_DXGI_LiveWrappedSwapChain1s = 0;
+volatile LONG SK_DXGI_LiveWrappedD3D10SwapChains = 0;
 
 struct __declspec (uuid ("{24430A12-6E3C-4706-AFFA-B3EEF2DF4102}") ) IWrapDXGISwapChain;
 
@@ -414,6 +415,9 @@ IWrapDXGISwapChain::Release (void)
       InterlockedDecrement (&SK_DXGI_LiveWrappedSwapChain1s);
     else
       InterlockedDecrement (&SK_DXGI_LiveWrappedSwapChains);
+
+    if (d3d10_)
+      InterlockedDecrement (&SK_DXGI_LiveWrappedD3D10SwapChains);
 
     pDev.Release ();
 
