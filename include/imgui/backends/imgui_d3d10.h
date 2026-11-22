@@ -8,6 +8,9 @@
 // True if config.apis.d3d10.experimental is on and the SwapChain belongs to a D3D10 device
 bool SK_D3D10_IsD3D10SwapChain              (IDXGISwapChain* pSwapChain);
 
+// L"D3D10.1" or L"D3D10" for a D3D10 SwapChain, logs its feature level once
+const wchar_t* SK_D3D10_GetAPIName          (IDXGISwapChain* pSwapChain);
+
 bool ImGui_ImplDX10_RenderDrawData          (ImDrawData* draw_data, IDXGISwapChain* pSwapChain);
 void ImGui_ImplDX10_InvalidateDeviceObjects (void);
 

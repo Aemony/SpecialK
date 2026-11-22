@@ -18,6 +18,7 @@
 #include <SpecialK/stdafx.h>
 
 #include <d3d10.h>
+#include <d3d10_1.h>
 #include <SpecialK/render/dxgi/dxgi_util.h>
 
 #include <imgui/imgui.h>
@@ -320,6 +321,51 @@ SK_D3D10_IsD3D10SwapChain (IDXGISwapChain* pSwapChain)
   }
 
   return true;
+}
+
+// The device alone cannot tell D3D10 from D3D10.1: devices made by either runtime
+//   answer to ID3D10Device1, and both report feature level 10_0 unless the game
+//     asked D3D10CreateDevice[AndSwapChain]1 for something else. So:
+//
+//   * Feature level 10_1 or 9_x: only the D3D10.1 runtime can create those
+//   * Feature level 10_0: D3D10.1 if only its runtime is loaded (MT Framework
+//                           games use D3D10.1 at feature level 10_0 and never
+//                             load d3d10.dll)
+bool
+SK_D3D10_IsD3D10_1Device (ID3D10Device1* pDev1, D3D10_FEATURE_LEVEL1* pLevel = nullptr)
+{
+  const D3D10_FEATURE_LEVEL1 level =
+    pDev1->GetFeatureLevel ();
+
+  if (pLevel != nullptr)
+     *pLevel = level;
+
+  return
+    ( level != D3D10_FEATURE_LEVEL_10_0 ) ||
+    ( SK_GetModuleHandleW (L"d3d10_1.dll") != nullptr &&
+      SK_GetModuleHandleW (L"d3d10.dll")   == nullptr );
+}
+
+const wchar_t*
+SK_D3D10_GetAPIName (IDXGISwapChain* pSwapChain)
+{
+  SK_ComPtr <ID3D10Device1> pDev1;
+
+  if ( pSwapChain == nullptr ||
+       FAILED (pSwapChain->GetDevice (__uuidof (ID3D10Device1), (void **)&pDev1.p)) )
+    return L"D3D10";
+
+  D3D10_FEATURE_LEVEL1 level = D3D10_FEATURE_LEVEL_10_0;
+
+  const bool bD3D10_1 =
+    SK_D3D10_IsD3D10_1Device (pDev1, &level);
+
+  SK_D3D10_LOG_ONCE ( APIName,
+    L"SwapChain %p uses %ws at feature level %d_%d.", pSwapChain,
+      bD3D10_1 ? L"D3D10.1" : L"D3D10", (level >> 12) & 0xF, (level >> 8) & 0xF );
+
+  return
+    bD3D10_1 ? L"D3D10.1" : L"D3D10";
 }
 
 bool
