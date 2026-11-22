@@ -4835,6 +4835,7 @@ auto DeclKeybind =
 
   // -1 = ask, 0 = off, 1 = on; older INIs hold true / false, read as 1 / 0
   apis.experimental_d3d10->load (config.apis.d3d10.setting);
+  config.apis.d3d10.setting_next = config.apis.d3d10.setting;
 
   if (! apis.OpenGL.hook->load (config.apis.OpenGL.hook))
     config.apis.OpenGL.hook = true;
@@ -7201,7 +7202,7 @@ SK_SaveConfig ( std::wstring name,
   apis.dxvk9.enable->store                    (config.apis.d3d9.native_dxvk);
   apis.d3d11.hook->store                      (config.apis.dxgi.d3d11.hook);
   apis.d3d12.hook->store                      (config.apis.dxgi.d3d12.hook);
-  apis.experimental_d3d10->store              (config.apis.d3d10.setting);
+  apis.experimental_d3d10->store              (config.apis.d3d10.setting_next); // Next launch
   apis.OpenGL.hook->store                     (config.apis.OpenGL.hook);
 #ifdef _M_AMD64
   if (config.apis.Vulkan.hook_next != SK_NoPreference) config.apis.Vulkan.hook = config.apis.Vulkan.hook_next != 0;

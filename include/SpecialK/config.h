@@ -1498,6 +1498,12 @@ struct sk_config_t
       //     its internal D3D11 device and draw the D3D10 overlay)
       int    setting      = SK_NoPreference;
 
+      // What is saved, i.e. used the next time the game starts; the Render
+      //   Backends checkbox edits this, like the other APIs' hook_next.
+      //     setting itself must not change mid-game (the overlay checks it
+      //       every frame), except through the startup prompt.
+      int    setting_next = SK_NoPreference;
+
       bool   enabled (void) const noexcept { return setting == 1; }
     } d3d10;
 

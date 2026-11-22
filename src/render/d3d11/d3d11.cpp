@@ -8222,7 +8222,9 @@ SK_D3D10_OfferExperimentalSupport (bool bD3D10_1, LONG lMaxLiveSwapChains)
                       SK_FormatStringW (L"%ws Game Detected", wszAPI),
                         MB_ICONQUESTION | MB_YESNO );
 
-  config.apis.d3d10.setting = bEnable ? 1 : 0;
+  // Applies right away (the game has not presented yet) and is saved
+  config.apis.d3d10.setting      = bEnable ? 1 : 0;
+  config.apis.d3d10.setting_next = config.apis.d3d10.setting;
   config.utility.save_async ();
 
   SK_LOGi0 ( L"User %ws experimental D3D10 support; not asking again.",
