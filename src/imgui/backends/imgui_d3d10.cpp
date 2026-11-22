@@ -281,6 +281,20 @@ ImGui_ImplDX10_InvalidateDeviceObjects (void)
       SK_LOGi0 (__VA_ARGS__);                                   \
   } while (0)
 
+// Same test as SK_D3D10_IsD3D10SwapChain (...), without logging; used when
+//   wrapping every SwapChain, where D3D11 games are the expected case.
+bool
+SK_D3D10_SwapChainUsesD3D10 (IDXGISwapChain* pSwapChain)
+{
+  if (! config.apis.d3d10.experimental || pSwapChain == nullptr)
+    return false;
+
+  SK_ComPtr <ID3D10Device> pDev10;
+
+  return
+    SUCCEEDED (pSwapChain->GetDevice (__uuidof (ID3D10Device), (void **)&pDev10.p));
+}
+
 bool
 SK_D3D10_IsD3D10SwapChain (IDXGISwapChain* pSwapChain)
 {
