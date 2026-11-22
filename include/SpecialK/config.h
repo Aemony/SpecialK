@@ -1494,6 +1494,10 @@ struct sk_config_t
         d3d11;
     } dxgi;
 
+    struct d3d10_s {
+      bool   experimental = false; // Hook D3D10 through its internal D3D11 device
+    } d3d10;
+
     struct khronos_s {
       bool   hook      = true;
       bool   translate = true;

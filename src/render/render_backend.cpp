@@ -2921,7 +2921,14 @@ SK_RenderBackend_V2::updateActiveAPI (SK_RenderAPI _api)
             {
               SK_ComPtr <IUnknown> pTest = nullptr;
 
-              if (       SUCCEEDED (device->QueryInterface (IID_ID3D11Device5, (void **)&pTest))) {
+              // Experimental: D3D10 games run on a D3D11 device, but QI from
+              //   ID3D11Device -> ID3D10Device fails; ask the SwapChain instead.
+              SK_ComQIPtr <IDXGISwapChain> pSwapChain (swapchain);
+
+              if (       config.apis.d3d10.experimental && pSwapChain != nullptr &&
+                         SUCCEEDED (pSwapChain->GetDevice (__uuidof (ID3D10Device), (void **)&pTest))) {
+                wcsncpy (name, L"D3D10 ", 7);
+              } else if (SUCCEEDED (device->QueryInterface (IID_ID3D11Device5, (void **)&pTest))) {
                 wcsncpy (name, L"D3D11.4", 8); // Creators Update
               } else if (SUCCEEDED (device->QueryInterface (IID_ID3D11Device4, (void **)&pTest))) {
                 wcsncpy (name, L"D3D11.4", 8);
