@@ -346,7 +346,10 @@ SK_GetCurrentGameID (void) noexcept
           { L"Timberborn.exe",                         SK_GAME_ID::Timberborn                   },
           { L"CONTROLResonant.exe",                    SK_GAME_ID::CONTROL_Resonant             },
           { L"helldivers2.exe",                        SK_GAME_ID::Helldivers2                  },
-          { L"EDF41.exe",                              SK_GAME_ID::EarthDefenseForce41          }
+          { L"EDF41.exe",                              SK_GAME_ID::EarthDefenseForce41          },
+          // Despite the name, this is the game itself; listing it keeps the
+          //   generic "Launcher" substring test from making SK back out.
+          { L"PrinceOfPersia_Launcher.exe",            SK_GAME_ID::PrinceOfPersia_2008          }
         };
 
     first_check  = false;
