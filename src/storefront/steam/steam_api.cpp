@@ -3796,6 +3796,7 @@ SteamAPI_PumpThread (LPVOID user)
   double callback_freq     =  0.0;
 
   if ( game_id == SK_GAME_ID::JustCause3      ||
+       game_id == SK_GAME_ID::YakuzaKiwami    ||
        game_id == SK_GAME_ID::YakuzaKiwami2   ||
        game_id == SK_GAME_ID::YakuzaUnderflow ||
        SK_IsModuleLoaded (
