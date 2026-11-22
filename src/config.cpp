@@ -1139,6 +1139,10 @@ struct {
 struct {
   struct {
     sk::ParameterBool*    clamp_lod_bias          = nullptr;
+    sk::ParameterBool*    cache                   = nullptr;
+    sk::ParameterBool*    inject                  = nullptr;
+    sk::ParameterBool*    on_demand_dump          = nullptr;
+    sk::ParameterInt*     max_cache_size          = nullptr;
   } d3d9;
 
   struct {
@@ -2326,6 +2330,10 @@ auto DeclKeybind =
     ConfigEntry (render.dstorage.use_dummy_device,       L"Create a standalone D3D12 device if a DStorage game tries "
                                                          L"to allocate a DStorage queue with no D3D12 device supplied",dll_ini,         L"Render.DStorage",       L"UseDummyD3D12DeviceIfNeeded"),
     ConfigEntry (texture.d3d9.clamp_lod_bias,            L"Clamp Negative LOD Bias",                                   dll_ini,         L"Textures.D3D9",         L"ClampNegativeLODBias"),
+    ConfigEntry (texture.d3d9.cache,                     L"Cache Textures",                                            dll_ini,         L"Textures.D3D9",         L"Cache"),
+    ConfigEntry (texture.d3d9.inject,                    L"Inject Textures",                                           dll_ini,         L"Textures.D3D9",         L"Inject"),
+    ConfigEntry (texture.d3d9.on_demand_dump,            L"Keep Textures Lockable So They Can Be Dumped",              dll_ini,         L"Textures.D3D9",         L"AllowOnDemandDump"),
+    ConfigEntry (texture.d3d9.max_cache_size,            L"Maximum Size of Texture Cache (in MiB)",                    dll_ini,         L"Textures.D3D9",         L"MaxCacheSizeInMiB"),
     ConfigEntry (texture.d3d11.cache,                    L"Cache Textures",                                            dll_ini,         L"Textures.D3D11",        L"Cache"),
     ConfigEntry (texture.d3d11.use_l3_hash,              L"Adds L3 to Hierarchical Cache;  L3=Fmt,  L2=Mips,  L1=Res", dll_ini,         L"Textures.D3D11",        L"CacheUsingL3Hash"),
     ConfigEntry (texture.d3d11.precise_hash,             L"Precise Hash Generation",                                   dll_ini,         L"Textures.D3D11",        L"PreciseHash"),
@@ -5311,6 +5319,10 @@ auto DeclKeybind =
   render.d3d9.min_refresh->load         (config.render.d3d9.refresh.min);
   render.d3d9.enable_texture_mods->load (config.textures.d3d9_mod);
   texture.d3d9.clamp_lod_bias->load     (config.textures.clamp_lod_bias);
+  texture.d3d9.cache->load              (config.textures.d3d9.cache);
+  texture.d3d9.inject->load             (config.textures.d3d9.inject);
+  texture.d3d9.on_demand_dump->load     (config.textures.on_demand_dump);
+  texture.d3d9.max_cache_size->load     (config.textures.d3d9.max_cache_size);
 
 
   // OpenGL
@@ -7638,6 +7650,10 @@ SK_SaveConfig ( std::wstring name,
     render.framerate.latent_sync.skip_frames->store (config.render.framerate.latent_sync.skip_frames);
 
     texture.d3d9.clamp_lod_bias->store              (config.textures.clamp_lod_bias);
+    texture.d3d9.cache->store                       (config.textures.d3d9.cache);
+    texture.d3d9.inject->store                      (config.textures.d3d9.inject);
+    texture.d3d9.on_demand_dump->store              (config.textures.on_demand_dump);
+    texture.d3d9.max_cache_size->store              (config.textures.d3d9.max_cache_size);
 
     // SLI only works in Direct3D
     //  + Keep these out of the INI on non-SLI systems for simplicity
