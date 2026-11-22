@@ -1,4 +1,4 @@
-name: Rebuild combined
+name: Rebuild Frosted K
 
 on:
   schedule:

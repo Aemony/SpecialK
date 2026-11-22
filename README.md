@@ -64,7 +64,7 @@ commit to it. Fix things on the source branch they belong to.
   included branch and this branch. It rebuilds only when one of them has
   changed, and it pushes only when the resulting content differs from
   `combined`.
-- **On demand.** Go to *Actions → Rebuild combined → Run workflow*. Tick
+- **On demand.** Go to *Actions → Rebuild Frosted K → Run workflow*. Tick
   *force* to rebuild even when nothing changed.
 
 You do not need to sync `main` for `combined` to pick up upstream changes,
