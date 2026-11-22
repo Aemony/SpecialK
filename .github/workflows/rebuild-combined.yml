@@ -280,8 +280,7 @@ jobs:
           done
           upstream=${UPSTREAM_URL%.git}
           {
-            echo "> [!WARNING]"
-            echo "> **$PRODUCT is an unofficial build of Special K**, with the changes below that are not (or not yet) part of Special K. It is not made or supported by the Special K team. Please report problems [here]($GITHUB_SERVER_URL/$GITHUB_REPOSITORY/issues), not on the Special K Discord, forums or issue tracker."
+            echo "$PRODUCT is Special K with the changes below on top, which are not (or not yet) part of official Special K builds."
             echo
             echo "$PRODUCT $VERSION, built from [\`$TARGET\`]($GITHUB_SERVER_URL/$GITHUB_REPOSITORY/tree/$TAG) at \`${SHA:0:8}\`. In game it reports itself as \`Special K v $VERSION ($PRODUCT ${SHA:0:8})\`."
             echo
