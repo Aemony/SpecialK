@@ -157,7 +157,7 @@ jobs:
           $Text = [IO.File]::ReadAllText($File)
           $Old  = '"Special K Modding System"'
           if ($Text.Contains($Old)) {
-            $Text = $Text.Replace($Old, "`"Special K Modding System ($env:PRODUCT, unofficial build)`"")
+            $Text = $Text.Replace($Old, "`"Special K Modding System ($env:PRODUCT)`"")
             [IO.File]::WriteAllText($File, $Text, $Utf8Bom)
             Write-Host "Updated FileDescription in $File"
           } else {

@@ -40,7 +40,7 @@ Special K v 26.11.4.1 (Frosted K 491bf1c7)
 
 The first part is the Special K version it's based on, and the last part is
 the build. The DLL's *Details* tab in Explorer shows the same version, and the
-description *Special K Modding System (Frosted K, unofficial build)*.
+description *Special K Modding System (Frosted K)*.
 
 ---
 
@@ -83,8 +83,8 @@ the version string), `SLUG` (file names) and `TAG_PREFIX` (tags).
 
 - **Version stamp:** before compiling, the Action appends
   ` (Frosted K <sha8>)` to `SK_VERSION_STR_A` in
-  `include/SpecialK/DLL_VERSION.H`, and marks `FileDescription` in
-  `resource/Resource.rc` as unofficial. It changes only the build's working
+  `include/SpecialK/DLL_VERSION.H`, and adds ` (Frosted K)` to `FileDescription`
+  in `resource/Resource.rc`. It changes only the build's working
   copy, never `combined` or any branch. The numeric file version and the
   `ProductName` ("Special K") stay unchanged, because SKIF only recognizes a
   DLL whose product name contains "Special K". The suffix also must not contain
