@@ -25,6 +25,8 @@
 
 #include <SpecialK/control_panel/compatibility.h>
 
+extern volatile LONG SK_DXGI_LiveWrappedD3D10SwapChains; // dxgi_swapchain.cpp
+
 using namespace SK::ControlPanel;
 
 bool
@@ -144,9 +146,9 @@ SK::ControlPanel::Compatibility::Draw (void)
       };
 
 #ifdef _M_AMD64
-      constexpr float num_lines = 4.5f; // Basic set of APIs
+      constexpr float num_lines = 5.5f; // Basic set of APIs (+ Direct3D 10 row)
 #else
-      constexpr float num_lines = 5.5f; // + DirectDraw / Direct3D 8
+      constexpr float num_lines = 6.5f; // + DirectDraw / Direct3D 8
 #endif
 
       ImGui::PushStyleVar                                                                             (ImGuiStyleVar_ChildRounding, 10.0f);
@@ -171,6 +173,63 @@ SK::ControlPanel::Compatibility::Draw (void)
 
       if (ImGui_CheckboxEx ("Direct3D 11",  &hook_d3d11))             config.apis.dxgi.d3d11.hook_next = (hook_d3d11 ? 1 : 0);
       if (ImGui_CheckboxEx ("Direct3D 12",  &hook_d3d12, hook_d3d11)) config.apis.dxgi.d3d12.hook_next = (hook_d3d12 ? 1 : 0);
+
+      // ExperimentalD3D10 is a tristate: -1 = ask once (shown as a mixed / filled
+      //   square), 1 = on, 0 = off; clicking cycles ask -> on -> off -> ask.
+      //
+      //   D3D10 games run on the D3D10 runtime's internal D3D11 device, so this
+      //     needs Direct3D 11. Like the API toggles above it takes effect the next
+      //       time the game starts (setting_next); changing the live setting would
+      //         hide the overlay in a D3D10 game while clicking through the states.
+      if (hook_d3d11)
+      {
+        int& d3d10 =
+          config.apis.d3d10.setting_next;
+
+        bool checked = (d3d10 == 1);
+
+        ImGui::PushItemFlag (ImGuiItemFlags_MixedValue, d3d10 == SK_NoPreference);
+
+        if (ImGui::Checkbox ("Direct3D 10 (Experimental)", &checked))
+        {
+          d3d10 = d3d10 == SK_NoPreference ? 1
+                : d3d10 == 1               ? 0
+                                           : SK_NoPreference;
+        }
+
+        ImGui::PopItemFlag  ();
+
+        if (ImGui::IsItemHovered ())
+        {
+          ImGui::BeginTooltip    ();
+          ImGui::TextUnformatted ("Experimental Direct3D 10 / 10.1 support for this game (ExperimentalD3D10)");
+          ImGui::Separator       ();
+          ImGui::BulletText      ( "%s",
+                                   d3d10 == SK_NoPreference ? "Ask once: if this game uses Direct3D 10, Special K asks whether "
+                                                              "to enable it and remembers the answer." :
+                                   d3d10 == 1               ? "On: if this game uses Direct3D 10, the overlay is drawn through Direct3D 10." :
+                                                              "Off: if this game uses Direct3D 10, the overlay cannot be shown, and Special K does not ask." );
+          ImGui::BulletText      ("Only matters if this game uses Direct3D 10; takes effect the next time the game starts.");
+
+          if (ReadAcquire (&SK_DXGI_LiveWrappedD3D10SwapChains) > 0)
+          {
+            ImGui::Separator     ();
+            ImGui::TextColored   (ImColor (255, 255, 0), "This game uses Direct3D 10.");
+          }
+
+          ImGui::EndTooltip      ();
+        }
+      }
+
+      else
+      {
+        ImGui::TreePush     ("");
+        ImGui::TextDisabled ("Direct3D 10 (Experimental)");
+        ImGui::TreePop      (  );
+
+        if (ImGui::IsItemHovered ())
+          ImGui::SetTooltip ("Direct3D 10 is hooked through Direct3D 11; enable Direct3D 11 first.");
+      }
 
       ImGui::Columns    ( 1 );
       ImGui::Separator  (   );

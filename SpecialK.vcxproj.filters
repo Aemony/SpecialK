@@ -2181,6 +2181,9 @@
     <ClInclude Include="include\imgui\backends\imgui_d3d9.h">
       <Filter>Header Files\ImGui\Backends</Filter>
     </ClInclude>
+    <ClInclude Include="include\imgui\backends\imgui_d3d10.h">
+      <Filter>Header Files\ImGui\Backends</Filter>
+    </ClInclude>
     <ClInclude Include="include\imgui\backends\imgui_d3d11.h">
       <Filter>Header Files\ImGui\Backends</Filter>
     </ClInclude>
@@ -3694,6 +3697,9 @@
     </ClCompile>
     <ClCompile Include="src\imgui\backends\imgui_d3d12.cpp">
       <Filter>Source Files\Backends\Render\D3D12</Filter>
+    </ClCompile>
+    <ClCompile Include="src\imgui\backends\imgui_d3d10.cpp">
+      <Filter>Source Files\Backends\Render\D3D11</Filter>
     </ClCompile>
     <ClCompile Include="src\imgui\backends\imgui_d3d11.cpp">
       <Filter>Source Files\Backends\Render\D3D11</Filter>
