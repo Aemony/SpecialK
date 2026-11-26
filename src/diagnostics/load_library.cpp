@@ -1213,8 +1213,11 @@ LoadLibraryA_Detour (LPCSTR lpFileName)
   std::wstring wFileName;
 
   // Stupidity for idTechLauncher
+  //
+  //   * ANSI APIs take paths in the active code page (e.g. Shift-JIS), not UTF-8;
+  //       CP_ACP is still UTF-8 for processes that opt in via their manifest.
   if (lpFileName != nullptr)
-    wFileName = SK_UTF8ToWideChar (lpFileName) + std::wstring (L"\0");
+    wFileName = SK_ANSIToWideChar (lpFileName) + std::wstring (L"\0");
 
   return
     LoadLibrary_Marshal (
@@ -1531,7 +1534,7 @@ LoadLibraryExA_Detour (
   std::wstring wszFileName;
 
   if (lpFileName != nullptr)
-    wszFileName = SK_UTF8ToWideChar (lpFileName) + std::wstring (L"\0");
+    wszFileName = SK_ANSIToWideChar (lpFileName) + std::wstring (L"\0");
 
   return
     LoadLibraryEx_Marshal (
