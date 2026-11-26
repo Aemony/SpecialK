@@ -1069,8 +1069,15 @@ struct sk_config_t
       bool    vibrate_on_miss      = false;
     } cache;
 
+    // Direct3D 9 has its own texture manager, with its own settings
+    struct d3d9_s {
+      bool    cache                =  true; // Reuse textures the game loads more than once
+      bool    inject               =  true; // Look for replacement textures
+      int     max_cache_size       =  4096; // (MiB)
+    } d3d9;
+
     bool highlight_debug_tex       =  true;
-    bool on_demand_dump            = false;
+    bool on_demand_dump            = false; // D3D9: Keep textures lockable (dumpable)
     bool d3d9_mod                  = false; // Causing compat issues in some D3D9Ex games ATM
     bool dump_on_load              = false;
     bool clamp_lod_bias            = false;
