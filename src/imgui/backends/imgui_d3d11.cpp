@@ -14,6 +14,7 @@
 
 #include <imgui/imgui.h>
 #include <imgui/backends/imgui_d3d11.h>
+#include <imgui/backends/imgui_d3d10.h>
 #include <SpecialK/render/dxgi/dxgi_backend.h>
 #include <SpecialK/render/dxgi/dxgi_swapchain.h>
 #include <SpecialK/render/dxgi/dxgi_util.h>
@@ -219,6 +220,14 @@ ImGui_ImplDX11_RenderDrawData (ImDrawData* draw_data)
   SK_ComQIPtr <ID3D11DeviceContext> pDevCtx    (rb.d3d11.immediate_ctx);
   SK_ComQIPtr <IDXGISwapChain>      pSwapChain (   rb.swapchain       );
   SK_ComQIPtr <IDXGISwapChain3>     pSwap3     (   rb.swapchain       );
+
+  // D3D10 games: drawing through this D3D11 context would be silently discarded,
+  //   so submit the overlay through the game's ID3D10Device instead.
+  if (SK_D3D10_IsD3D10SwapChain (pSwapChain))
+  {
+    ImGui_ImplDX10_RenderDrawData (draw_data, pSwapChain);
+    return;
+  }
 
   UINT currentBuffer = 0;
    //(g_frameIndex % g_numFramesInSwapChain);
@@ -1686,6 +1695,8 @@ ImGui_ImplDX11_InvalidateDeviceObjects (void)
   #define RESET_SHADERS
 
   SK_ImGui_ResetExternal ();
+
+  ImGui_ImplDX10_InvalidateDeviceObjects ();
 
   auto _CleanupBackbuffer = [&](UINT index) -> void
   {

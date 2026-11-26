@@ -45,6 +45,7 @@ extern BOOL _NO_ALLOW_MODE_SWITCH;
 
 volatile LONG SK_DXGI_LiveWrappedSwapChains  = 0;
 volatile LONG SK_DXGI_LiveWrappedSwapChain1s = 0;
+volatile LONG SK_DXGI_LiveWrappedD3D10SwapChains = 0;
 
 struct __declspec (uuid ("{24430A12-6E3C-4706-AFFA-B3EEF2DF4102}") ) IWrapDXGISwapChain;
 
@@ -415,6 +416,9 @@ IWrapDXGISwapChain::Release (void)
     else
       InterlockedDecrement (&SK_DXGI_LiveWrappedSwapChains);
 
+    if (d3d10_)
+      InterlockedDecrement (&SK_DXGI_LiveWrappedD3D10SwapChains);
+
     pDev.Release ();
 
     if ((! _d3d12_rbk->frames_.empty ()) ||
@@ -614,7 +618,7 @@ IWrapDXGISwapChain::PresentBase (void)
   );
 
   // D3D12 is already Flip Model and doesn't need this
-  if ((flip_model.isOverrideActive () || SK_DXGI_ZeroCopy == TRUE) && (! d3d12_) && (! bSkipCopy))
+  if ((flip_model.isOverrideActive () || SK_DXGI_ZeroCopy == TRUE) && (! d3d12_) && (! d3d10_) && (! bSkipCopy))
   {
     SK_ComQIPtr <ID3D11Device>
         pD3D11Dev (pDev);
@@ -737,8 +741,14 @@ IWrapDXGISwapChain::GetBuffer (UINT Buffer, REFIID riid, void **ppSurface)
   if (SK_DXGI_ZeroCopy == -1)
       SK_DXGI_ZeroCopy = (__SK_HDR_16BitSwap || __SK_HDR_10BitSwap);
 
-  // D3D12 is already Flip Model and doesn't need this
-  if ((flip_model.isOverrideActive () || SK_DXGI_ZeroCopy == TRUE) && (! d3d12_))
+  // D3D12 is already Flip Model and doesn't need this.
+  //
+  // D3D10 can't use it: the emulated backbuffer is copied to the real one with
+  //   D3D11 commands, which a D3D10 device ignores. Worse, if SK's own setup
+  //     created that backbuffer first (games that Present before GetBuffer, e.g.
+  //       MT Framework), the game was handed it and its frames never reached the
+  //         screen (black). D3D10 games get the real backbuffer instead.
+  if ((flip_model.isOverrideActive () || SK_DXGI_ZeroCopy == TRUE) && (! d3d12_) && (! d3d10_))
   {
     // MGS V Compatibility
     Buffer = 0;
@@ -1085,7 +1095,7 @@ IWrapDXGISwapChain::ResizeBuffers ( UINT        BufferCount,
     state_cache._stalebuffers = false;
 
     // D3D12 is already Flip Model and doesn't need this
-    if ((flip_model.isOverrideActive () || SK_DXGI_ZeroCopy == TRUE) && (! d3d12_))
+    if ((flip_model.isOverrideActive () || SK_DXGI_ZeroCopy == TRUE) && (! d3d12_) && (! d3d10_))
     {
       std::scoped_lock lock (_backbufferLock);
 
