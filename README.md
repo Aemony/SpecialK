@@ -119,6 +119,11 @@ excluded.
 Each run's summary lists the branches it merged. To preview locally which
 branches would be included, run `bash rebuild.sh --list`.
 
+A branch that is already part of upstream `main` (for example after its pull
+request was merged) has nothing left to add, so it gets no merge commit and
+does not appear in the release notes. The run marks it with ⏭️ and a notice;
+delete the branch or add it to `exclude.txt`.
+
 Keep in mind that every branch you push gets merged. A branch that conflicts
 with another one, or doesn't compile, fails the run until you exclude it or
 fix it, and `combined` keeps its last good state in the meantime.

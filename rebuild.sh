@@ -97,7 +97,22 @@ summary "## Rebuilding \`$TARGET\`"
 summary "Base: \`$UPSTREAM_BRANCH\` of $UPSTREAM_URL at \`$(git rev-parse --short HEAD)\`"
 summary ""
 
+upstream_ref="refs/remotes/upstream/$UPSTREAM_BRANCH"
 for b in "${branches[@]}"; do
+  # A branch that's already merged has nothing left to add: git would report
+  # "Already up to date" without a merge commit, so it wouldn't be in combined's
+  # history (or the release notes) as a merge of its own. Say so instead.
+  if git merge-base --is-ancestor "refs/remotes/origin/$b" HEAD; then
+    if git merge-base --is-ancestor "refs/remotes/origin/$b" "$upstream_ref"; then
+      echo "::notice title=Already upstream::$b is already part of upstream $UPSTREAM_BRANCH; it can be deleted or excluded."
+      summary "- ⏭️ \`$b\`: already part of upstream \`$UPSTREAM_BRANCH\`, nothing to merge (delete or exclude it)"
+    else
+      echo "$b is already contained in an earlier branch; nothing to merge."
+      summary "- ⏭️ \`$b\`: already contained in an earlier branch, nothing to merge"
+    fi
+    continue
+  fi
+
   echo "::group::Merge $b"
   if gitr merge --no-ff --no-edit -m "Merge branch '$b' into $TARGET" "refs/remotes/origin/$b"; then
     echo "::endgroup::"; summary "- ✅ \`$b\`"; continue
