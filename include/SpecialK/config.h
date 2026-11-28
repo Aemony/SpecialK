@@ -1494,6 +1494,21 @@ struct sk_config_t
         d3d11;
     } dxgi;
 
+    struct d3d10_s {
+      // ExperimentalD3D10: -1 (SK_NoPreference) = ask once ("Game Detected"
+      //   prompt, the answer is stored), 0 = off, 1 = on (hook D3D10 through
+      //     its internal D3D11 device and draw the D3D10 overlay)
+      int    setting      = SK_NoPreference;
+
+      // What is saved, i.e. used the next time the game starts; the Render
+      //   Backends checkbox edits this, like the other APIs' hook_next.
+      //     setting itself must not change mid-game (the overlay checks it
+      //       every frame), except through the startup prompt.
+      int    setting_next = SK_NoPreference;
+
+      bool   enabled (void) const noexcept { return setting == 1; }
+    } d3d10;
+
     struct khronos_s {
       bool   hook      = true;
       bool   translate = true;

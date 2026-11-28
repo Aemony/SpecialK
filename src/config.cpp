@@ -1390,6 +1390,8 @@ struct {
     sk::ParameterInt*     enable                  = nullptr;
   }   dxvk9;
 
+  sk::ParameterInt*       experimental_d3d10      = nullptr;
+
   sk::ParameterInt*       last_known              = nullptr;
 } apis;
 
@@ -2084,6 +2086,7 @@ auto DeclKeybind =
     ConfigEntry (apis.dxvk9.enable,                      L"Enable Native DXVK (D3D9)",                                 dll_ini,         L"API.Hook",              L"dxvk9"),
     ConfigEntry (apis.d3d11.hook,                        L"Enable Direct3D 11 Hooking",                                dll_ini,         L"API.Hook",              L"d3d11"),
     ConfigEntry (apis.d3d12.hook,                        L"Enable Direct3D 12 Hooking",                                dll_ini,         L"API.Hook",              L"d3d12"),
+    ConfigEntry (apis.experimental_d3d10,                L"Experimental D3D10 Support (via D3D11)",                    dll_ini,         L"API.Hook",              L"ExperimentalD3D10"),
 
 #ifdef _M_AMD64
     ConfigEntry (apis.Vulkan.hook,                       L"Enable Vulkan Hooking",                                     dll_ini,         L"API.Hook",              L"Vulkan"),
@@ -4833,6 +4836,10 @@ auto DeclKeybind =
         config.apis.dxgi.d3d11.hook = true;
   }
 
+  // -1 = ask, 0 = off, 1 = on; older INIs hold true / false, read as 1 / 0
+  apis.experimental_d3d10->load (config.apis.d3d10.setting);
+  config.apis.d3d10.setting_next = config.apis.d3d10.setting;
+
   if (! apis.OpenGL.hook->load (config.apis.OpenGL.hook))
     config.apis.OpenGL.hook = true;
 
@@ -7202,6 +7209,7 @@ SK_SaveConfig ( std::wstring name,
   apis.dxvk9.enable->store                    (config.apis.d3d9.native_dxvk);
   apis.d3d11.hook->store                      (config.apis.dxgi.d3d11.hook);
   apis.d3d12.hook->store                      (config.apis.dxgi.d3d12.hook);
+  apis.experimental_d3d10->store              (config.apis.d3d10.setting_next); // Next launch
   apis.OpenGL.hook->store                     (config.apis.OpenGL.hook);
 #ifdef _M_AMD64
   if (config.apis.Vulkan.hook_next != SK_NoPreference) config.apis.Vulkan.hook = config.apis.Vulkan.hook_next != 0;
