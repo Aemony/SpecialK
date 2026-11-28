@@ -196,7 +196,20 @@ SK::ControlPanel::D3D9::Draw (void)
       ImGui::PopStyleColor
                        (   );
       ImGui::Columns   ( 1 );
-      ImGui::SliderInt ("Cache Size (in MiB)###D3D9_TexCache_Size_MiB", &config.textures.cache.max_size, 256, 4096);
+      ImGui::SliderInt ("Cache Size (in MiB)###D3D9_TexCache_Size_MiB", &config.textures.d3d9.max_cache_size, 256, 4096);
+
+      ImGui::Checkbox  ("Cache Textures###D3D9_TexCache_Enable",        &config.textures.d3d9.cache);
+
+      if (ImGui::IsItemHovered ())
+        ImGui::SetTooltip ("Reuse a texture when the game loads the same file again; applies to textures loaded from now on.");
+
+      ImGui::SameLine  (   );
+
+      if (ImGui::Checkbox ("Inject Replacements###D3D9_TexInject_Enable", &config.textures.d3d9.inject))
+        tex_mgr.refreshDataSources ();
+
+      if (ImGui::IsItemHovered ())
+        ImGui::SetTooltip ("Look for replacement textures in the resource root; textures that are already replaced stay that way.");
     //ImGui::PopFont   (   );
       ImGui::EndChild  (   );
 
