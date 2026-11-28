@@ -4959,9 +4959,9 @@ wglCreateContext (HDC hDC)
 {
   WaitForInit_GL ();
 
-  // Some ICDs (e.g. Intel's igxelpicd64.dll) implement wglCreateContextAttribsARB
-  //   for compatibility profiles by calling opengl32!wglCreateContext, which
-  //     lands back here and would recurse until the stack overflows.
+  // Intel's ICD (igxelpicd64.dll) has been seen calling opengl32!wglCreateContext
+  //   from inside the wglCreateContextAttribsARB call made below (3.2 compatibility
+  //     attribs), which lands back here and recursed until the stack overflowed (#419).
   static thread_local bool in_create_context = false;
 
   if (in_create_context)
