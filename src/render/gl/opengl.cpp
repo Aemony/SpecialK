@@ -4649,10 +4649,10 @@ wglChoosePixelFormat ( HDC                     hDC,
 {
   WaitForInit_GL ();
 
-  // As a game's local OpenGL32.dll, gdi32's ChoosePixelFormat comes here, and
-  //   the call is dispatched to the ICD, which may in turn call back into
-  //     "OPENGL32" by name (Intel's ICD does that with wglCreateContext, #419).
-  //       Nested calls go straight to the system OpenGL32.dll, without overrides.
+  // As a game's local OpenGL32.dll, gdi32's ChoosePixelFormat comes here, and the
+  //   call is dispatched to the ICD. No ICD has been seen calling back into this
+  //     function, but Intel's calls back into wglCreateContext (#419), so nested
+  //       calls go straight to the system OpenGL32.dll, without overrides.
   static thread_local bool in_choose_pixel_format = false;
 
   if (in_choose_pixel_format)
